@@ -1,0 +1,19 @@
+{
+  "name": "food-order-system",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Office Food Ordering System Monorepo",
+  "scripts": {
+    "setup": "npm install && npm install --prefix frontend && npm install --prefix backend",
+    "dev:frontend": "npm run dev --prefix frontend",
+    "dev:backend": "npm run dev --prefix backend",
+    "build:frontend": "npm run build --prefix frontend",
+    "deploy:backend": "npm run deploy --prefix backend"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lianglun0125/food-order-system.git"
+  },
+  "author": "",
+  "license": "ISC"
+}

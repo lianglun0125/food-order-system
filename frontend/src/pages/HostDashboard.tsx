@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback} from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, RefreshCw, Trash2, Lock, FileSpreadsheet, 
@@ -6,6 +6,9 @@ import {
   Timer, Plus
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+
+// 引入智慧輪詢 Hook
+import { useSmartPolling } from '../hooks/useSmartPolling';
 
 // --- 型別定義 ---
 type Order = {
@@ -65,8 +68,8 @@ export default function HostDashboard() {
   const rawAvg = payerCount > 0 ? extraFeeTotal / payerCount : 0;
   const feePerPerson = Math.ceil(rawAvg / 5) * 5;
 
-  const fetchData = async () => {
-    setLoading(true);
+  // --- 1. 使用 useCallback 包裝 API 請求 ---
+  const fetchData = useCallback(async () => {
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
       const roomRes = await fetch(`${apiUrl}/api/groups/${id}`);
@@ -81,15 +84,18 @@ export default function HostDashboard() {
 
       setOrders((await ordersRes.json()).orders || []);
       setParticipants((await participantsRes.json()).participants || []);
-    } catch (e) { console.error(e); } finally { setLoading(false); }
-  };
-
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 5000); 
-    return () => clearInterval(interval);
+    } catch (e) { 
+      console.error(e); 
+    } finally { 
+      setLoading(false); 
+    }
   }, [id]);
 
+  // --- 2. 替換掉原本的 useEffect + setInterval，改用 useSmartPolling ---
+  // 5秒輪詢一次，背景自動暫停
+  useSmartPolling(fetchData, 5000, true);
+
+  // --- 3. 倒數計時顯示 (UI 用，這裡還是用 setInterval 比較滑順) ---
   useEffect(() => {
     if (!roomInfo?.deadline || roomInfo.status === 'LOCKED') {
       setTimeLeft('');
@@ -119,7 +125,7 @@ export default function HostDashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ deadline: newDeadline })
       });
-      fetchData();
+      fetchData(); // 立即更新
     } catch (e) { alert('延長失敗'); }
   };
 
