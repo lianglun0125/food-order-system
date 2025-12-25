@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   ChefHat, Users, UtensilsCrossed, ArrowRight, Zap, Github, Mail, 
-  Sparkles, X, Rocket, ShieldCheck, Smartphone, Gift
+  Sparkles, X, Rocket, ShieldCheck, Smartphone, Gift,
+  Bug
 } from 'lucide-react';
 
 export default function Home() {
@@ -11,6 +12,11 @@ export default function Home() {
 
   // 模擬更新日誌數據 (加上了顏色主題配置)
   const updates = [
+    { 
+      ver: 'v1.3.0', date: '2025.12.25', 
+      icon: <Bug size={24} className="text-red-600"/>, colorBg: 'bg-red-100', colorText: 'text-red-700',
+      title: '修復臭蟲ㄇㄟ', content: '聖誕節沒人約，在家沒事找BUG來修，找到BUG歡迎聯繫我 me@chelunliang.com。' 
+    },
     { 
       ver: 'v1.2.5', date: '2025.12.25', 
       icon: <Rocket size={24} className="text-blue-600"/>, colorBg: 'bg-blue-100', colorText: 'text-blue-700',
@@ -56,7 +62,7 @@ export default function Home() {
             >
               <Zap size={16} className="fill-orange-600 group-hover:rotate-12 transition-transform" />
               <span>就是點餐小助手ㄇㄟ～</span>
-              <span className="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded-full ml-1 border border-orange-200">v1.2.5</span>
+              <span className="bg-orange-100 text-orange-700 text-[10px] px-1.5 py-0.5 rounded-full ml-1 border border-orange-200">v1.3.0</span>
             </button>
 
             <h1 className="text-5xl md:text-6xl font-black text-gray-900 leading-tight tracking-tight">

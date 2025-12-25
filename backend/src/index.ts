@@ -68,14 +68,29 @@ app.patch('/api/orders/:id/pay', async (c) => {
 
 app.post('/api/groups/:code/join', async (c) => {
   const code = c.req.param('code')
-  const { userName } = await c.req.json()
+  // ★ 1. 接收 userToken
+  const { userName, userToken } = await c.req.json()
+  
   const group = await c.env.DB.prepare('SELECT id FROM groups WHERE join_code = ?').bind(code).first()
   if (!group) return c.json({ error: '房間不存在' }, 404)
+
+  const existingUser = await c.env.DB.prepare(`
+    SELECT user_token FROM participants 
+    WHERE group_id = ? AND lower(user_name) = lower(?)
+  `).bind(group.id, userName).first();
+  
+  if (existingUser) {
+    if (existingUser.user_token !== userToken) {
+       return c.json({ error: '這個暱稱已有人使用，請換一個' }, 409);
+    }
+  }
+
   await c.env.DB.prepare(`
-    INSERT INTO participants (group_id, user_name, last_seen) 
-    VALUES (?, ?, ?)
-    ON CONFLICT(group_id, user_name) DO UPDATE SET last_seen = ?
-  `).bind(group.id, userName, Date.now(), Date.now()).run()
+    INSERT INTO participants (group_id, user_name, user_token, last_seen) 
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(group_id, user_name) DO UPDATE SET last_seen = ?, user_token = ?
+  `).bind(group.id, userName, userToken, Date.now(), Date.now(), userToken).run()
+  
   return c.json({ success: true })
 })
 
@@ -144,17 +159,36 @@ app.post('/api/groups', async (c) => {
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`
     const prompt = `
-    Role: Expert Menu Digitizer for Taiwanese Restaurants.
-    Task: Extract menu data from the image into strict JSON.
+    Role: Expert Taiwanese Menu Parser (JSON API Mode).
+    Task: Convert the menu image into strict JSON.
     Language: Traditional Chinese (繁體中文).
+
+    *** CRITICAL LAYOUT ANALYSIS (MUST READ) ***
+    1. **The "Shared Noodle" Pattern:** - In this menu, sections like "湯麵類" or "乾麵類" use a GRID layout.
+       - **LEFT COLUMN:** Lists the dish names (e.g., 牛肉麵, 客家麵, 餛飩麵) and prices.
+       - **RIGHT COLUMN:** Lists the noodle types (e.g., 拉麵, 陽春麵, 冬粉, 粄條).
+       - **RULE:** The text on the right acts as "choices" for ALL items on the left in that section.
+       - **ACTION:** DO NOT create items named "拉麵" or "陽春麵". Instead, add ["拉麵", "陽春麵", "冬粉", "粄條", "米粉"] (and any others found) to the "choices" array of EVERY dish in that category.
+
+    2. **Drink Sizes:**
+       - If you see "飲料(小)" and "飲料(大)", merge them into ONE item "飲料".
+       - Add options: [{"name": "小", "price": 20}, {"name": "大", "price": 30}].
+
+    *** EXTREMELY IMPORTANT: ONE-SHOT EXAMPLE ***
+    If you see a layout like this:
+    [客家麵 60]   [拉麵 陽春麵]
+    [餛飩麵 60]   [冬粉 粄條]
     
-    *** ANALYSIS STRATEGY ***
-    1. **Matrix/Grid Layout:** If items (rows) share choices (columns) like "油麵/米粉/飯", create ONE item and put variants in "choices".
-    2. **Drink Sizes:** Put M/L sizes in "options".
-    3. **Global Extras:** Keywords "加料", "配料" go to "global_extras".
-    
+    You MUST output this structure for "客家麵" and "餛飩麵":
+    {
+      "n": "客家麵",
+      "p": 60,
+      "choices": ["拉麵", "陽春麵", "冬粉", "粄條"]
+    }
+
     *** JSON OUTPUT RULES ***
-    Return ONLY a JSON object:
+    Return ONLY a raw JSON object (no markdown, no \`\`\`json).
+    Structure:
     {
       "global_extras": [ {"n": "Name", "p": Price} ],
       "categories": [
@@ -163,16 +197,17 @@ app.post('/api/groups', async (c) => {
           "items": [
             {
               "n": "Item Name",
-              "p": BasePrice (lowest),
-              "options": [ {"name": "Spec", "price": Price} ],
-              "choices": ["Variant1", "Variant2"]
+              "p": BasePrice,
+              "is_drink": false,
+              "options": [ {"name": "Spec Name (Size/Add-on)", "price": 0} ],
+              "choices": [ "String1", "String2" ] 
             }
           ]
         }
       ]
     }
-    - No markdown blocks.
-    `
+    `;
+    
     const payload = {
       contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: imageFile.type || "image/jpeg", data: base64Image } }] }],
       generationConfig: { response_mime_type: "application/json" }
@@ -295,31 +330,73 @@ app.post('/api/groups/:id/payment-qr', async (c) => {
 
 app.post('/api/orders', async (c) => {
   try {
-    // 4. Rate Limiting (防惡意刷單)
+    // 1. Rate Limiting (防惡意刷單)
     const ip = c.req.header('CF-Connecting-IP') || 'global';
     if (c.env.RATE_LIMITER) {
-        // 設定較寬鬆的限制，例如 10秒內 5次 (視 wrangler.toml 設定而定)
         const { success } = await c.env.RATE_LIMITER.limit({ key: ip });
         if (!success) {
             return c.json({ error: '操作太快囉，休息一下 (429)' }, 429);
         }
     }
 
-    const { groupId, userName, items, userToken } = await c.req.json()
+    // 2. 接收並驗證資料格式
+    const body = await c.req.json().catch(() => null); // 防止 JSON 解析失敗導致崩潰
+    if (!body) return c.json({ error: '無效的 JSON 格式' }, 400);
+
+    const { groupId, userName, items, userToken } = body;
+
+    // 基礎欄位檢查
+    if (!groupId || typeof groupId !== 'string') return c.json({ error: '缺少房間 ID' }, 400);
+    if (!userName || typeof userName !== 'string' || userName.length > 20) return c.json({ error: '暱稱格式錯誤 (限 20 字)' }, 400);
+    if (!userToken || typeof userToken !== 'string') return c.json({ error: '缺少使用者憑證' }, 400);
+    if (!Array.isArray(items) || items.length === 0) return c.json({ error: '購物車是空的' }, 400);
+    if (items.length > 50) return c.json({ error: '單次下單品項過多' }, 400); // 防止爆量寫入
+
+    // 3. 檢查房間狀態
+    const group = await c.env.DB.prepare('SELECT status, deadline FROM groups WHERE id = ?').bind(groupId).first();
     
-    const group = await c.env.DB.prepare('SELECT status, deadline FROM groups WHERE id = ?').bind(groupId).first()
-    
-    if (!group) return c.json({ error: '房間不存在' }, 404)
-    if (group.status === 'LOCKED') return c.json({ error: '主揪已結單，無法再點餐囉！' }, 400)
-    if (group.deadline && Date.now() > group.deadline) return c.json({ error: '時間已到，停止收單！' }, 400)
-    
-    const totalPrice = items.reduce((sum: number, item: any) => sum + (item.p || 0), 0)
+    if (!group) return c.json({ error: '房間不存在' }, 404);
+    if (group.status === 'LOCKED') return c.json({ error: '主揪已結單，無法再點餐囉！' }, 400);
+    if (group.deadline && Date.now() > group.deadline) return c.json({ error: '時間已到，停止收單！' }, 400);
+
+    // 4. 清洗與驗證 Items (Sanitization) & 計算總金額
+    let calculatedTotalPrice = 0;
+    const cleanItems = [];
+
+    for (const item of items) {
+        // 確保 item 是物件
+        if (typeof item !== 'object' || item === null) continue;
+
+        // 強制轉型並檢查數值 (防止惡意負數或非數字)
+        let p = Number(item.p);
+        if (isNaN(p) || p < 0) p = 0; // 負數歸零，或你可以選擇直接報錯 return c.json({ error: '價格異常' }, 400);
+        
+        // 防止價格過大 (例如輸入 99999999)
+        if (p > 100000) return c.json({ error: '單項金額過大，請確認是否輸入錯誤' }, 400);
+
+        // 清洗名稱 (限制長度，防止 XSS 或 DB 攻擊)
+        let n = String(item.n || '未命名品項');
+        if (n.length > 100) n = n.substring(0, 100) + '...';
+
+        // 累加總金額
+        calculatedTotalPrice += p;
+
+        // 重組乾淨的 item 物件
+        cleanItems.push({ n, p });
+    }
+
+    if (calculatedTotalPrice < 0) return c.json({ error: '訂單總金額異常' }, 400);
+
+    // 5. 寫入資料庫
+    // 注意：這裡我們存入的是 cleanItems，而不是前端傳來的原始 items
     await c.env.DB.prepare(`INSERT INTO orders (group_id, user_name, items_json, total_price, created_at, is_paid, user_token) VALUES (?, ?, ?, ?, ?, 0, ?)`)
-      .bind(groupId, userName, JSON.stringify(items), totalPrice, Date.now(), userToken).run()
+      .bind(groupId, userName, JSON.stringify(cleanItems), calculatedTotalPrice, Date.now(), userToken).run();
     
-    return c.json({ success: true })
+    return c.json({ success: true });
+
   } catch (e) {
-    return c.json({ error: '訂單提交失敗' }, 500)
+    console.error('Order Error:', e);
+    return c.json({ error: '訂單提交失敗' }, 500);
   }
 })
 
