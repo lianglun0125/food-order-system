@@ -70,10 +70,20 @@ export default function HostDashboard() {
     return Object.values(grouped);
   };
 
-  const payerCount = orders.length;
+  const uniqueUsers = new Set(orders.map(o => o.user_name));
+  const payerCount = uniqueUsers.size; // 改成算人數
   const extraFeeTotal = roomInfo?.extra_fee || 0;
   const rawAvg = payerCount > 0 ? extraFeeTotal / payerCount : 0;
   const feePerPerson = Math.ceil(rawAvg / 5) * 5;
+
+  const isUserFirstOrder = (order: Order, allOrders: Order[]) => {
+      // 找到該用戶所有訂單中 id 最小 (最早) 的那一筆
+      const userOrders = allOrders.filter(o => o.user_name === order.user_name);
+      if (userOrders.length === 0) return false;
+      // 假設 orders 已經是依照時間排序，或比較 ID
+      const firstOrderId = Math.min(...userOrders.map(o => o.id));
+      return order.id === firstOrderId;
+  };
 
   const fetchData = useCallback(async (isManual: boolean = false) => {
     if (isManual) setIsRefreshing(true); // 手動點擊時開啟動畫
@@ -214,38 +224,87 @@ export default function HostDashboard() {
 
   const handleExportExcel = () => {
       if (orders.length === 0) return alert('目前沒有訂單可以匯出');
-      const detailRows: any[] = [];
-      orders.forEach(order => {
-        try {
-          const rawItems = JSON.parse(order.items_json);
-          const items = aggregateItems(rawItems); 
-          items.forEach((item) => {
-            detailRows.push({ '姓名': order.user_name, '品項': item.n, '數量': item.count, '單價': item.p, '小計': item.subtotal, '備註': item.note || '', '狀態': order.is_paid ? '已付' : '未付' });
-          });
-        } catch (e) { console.error(e); }
+
+      // 1. 準備上半部的「詳細訂單清單」 (這部分維持原樣，保留細節)
+      const detailRows = orders.flatMap(order => {
+          let items = [];
+          try { items = JSON.parse(order.items_json); } catch { }
+          return items.map((item: any) => ({
+              '下單時間': new Date(order.created_at).toLocaleString(),
+              '訂購人': order.user_name,
+              '品項': item.n,
+              '單價': item.p,
+              '狀態': order.is_paid ? '已付款' : '未付款'
+          }));
       });
+
+      // 建立工作表
       const ws = XLSX.utils.json_to_sheet(detailRows);
-      ws['!cols'] = [{wch: 15}, {wch: 30}, {wch: 8}, {wch: 8}, {wch: 8}, {wch: 20}, {wch: 10}];
-      let currentRow = detailRows.length + 3;
-      XLSX.utils.sheet_add_aoa(ws, [['--- 收款統計 (含運費分攤) ---']], { origin: `A${currentRow}` });
+
+      // 設定欄寬 (美觀)
+      ws['!cols'] = [{wch: 20}, {wch: 15}, {wch: 30}, {wch: 8}, {wch: 10}];
+
+      // --- 下半部：收款統計 (改為合併計算) ---
+      
+      let currentRow = detailRows.length + 3; // 空兩行再開始寫統計
+
+      // 寫入標題
+      XLSX.utils.sheet_add_aoa(ws, [['--- 收款統計 (依人數合併) ---']], { origin: `A${currentRow}` });
       currentRow++;
-      XLSX.utils.sheet_add_aoa(ws, [['姓名', '餐點費', '運費/雜費', '應付總額', '付款狀態']], { origin: `A${currentRow}` });
+      
+      // 寫入表頭
+      XLSX.utils.sheet_add_aoa(ws, [['姓名', '餐點總額', '運費/雜費', '應付總額', '付款狀態', '訂單數']], { origin: `A${currentRow}` });
       currentRow++;
-      let grandTotal = 0; let paidTotal = 0;
-      orders.forEach(order => {
-        const finalAmount = order.total_price + feePerPerson;
-        grandTotal += finalAmount;
-        if(order.is_paid) paidTotal += finalAmount;
-        XLSX.utils.sheet_add_aoa(ws, [[order.user_name, order.total_price, feePerPerson, finalAmount, order.is_paid ? '已付 ✅' : '未付 ❌']], { origin: `A${currentRow}` });
-        currentRow++;
+
+      // ★★★ 核心修改：依照姓名歸戶 (Group By User) ★★★
+      // 使用 Reduce 把同一個人的資料加在一起
+      const userSummary = orders.reduce((acc, order) => {
+          if (!acc[order.user_name]) {
+              acc[order.user_name] = {
+                  totalMeal: 0,      // 餐費總計
+                  allPaid: true,     // 是否全部已付
+                  orderCount: 0,     // 訂單筆數
+              };
+          }
+          acc[order.user_name].totalMeal += order.total_price;
+          if (!order.is_paid) acc[order.user_name].allPaid = false; // 只要有一筆沒付，就視為未付清
+          acc[order.user_name].orderCount += 1;
+          return acc;
+      }, {} as Record<string, { totalMeal: number, allPaid: boolean, orderCount: number }>);
+
+      // 開始寫入合併後的資料
+      let grandTotal = 0; // 全團總金額
+      
+      Object.entries(userSummary).forEach(([name, data]) => {
+          // 運費只收一次 (feePerPerson 是前面算好的平均運費)
+          const shippingFee = feePerPerson; 
+          const finalAmount = data.totalMeal + shippingFee;
+          
+          grandTotal += finalAmount;
+
+          XLSX.utils.sheet_add_aoa(ws, [[
+              name,
+              data.totalMeal,
+              shippingFee,
+              finalAmount,
+              data.allPaid ? '已結清 ✅' : '未付清 ❌',
+              `${data.orderCount} 筆`
+          ]], { origin: `A${currentRow}` });
+          
+          currentRow++;
       });
-      currentRow++; 
-      XLSX.utils.sheet_add_aoa(ws, [['總計', '', '', grandTotal, `已收: ${paidTotal} / 未收: ${grandTotal - paidTotal}`]], { origin: `A${currentRow}` });
+
+      // 最後加一個總計行
+      currentRow++;
+      XLSX.utils.sheet_add_aoa(ws, [['全團總計', '', '', grandTotal]], { origin: `A${currentRow}` });
+
+      // 匯出檔案
       const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "訂單明細");
-      XLSX.writeFile(wb, `點餐明細_${id}.xlsx`);
+      XLSX.utils.book_append_sheet(wb, ws, "訂單統計");
+      XLSX.writeFile(wb, `點餐統計_${roomInfo?.joinCode}_${new Date().toLocaleDateString()}.xlsx`);
   };
 
+  
   const OFFLINE_THRESHOLD = 30000; 
   const activeParticipants = participants.filter(p => (Date.now() - p.last_seen) < OFFLINE_THRESHOLD);
   const totalPrice = orders.reduce((sum, o) => sum + o.total_price, 0);
@@ -450,10 +509,17 @@ export default function HostDashboard() {
                       <span className="text-gray-400 min-w-[3rem] text-right font-medium">${item.subtotal}</span>
                     </div>
                   ))}
-                  {feePerPerson > 0 && (
+                  {feePerPerson > 0 && isUserFirstOrder(order, orders) && (
                     <div className="text-sm text-orange-600 flex justify-between items-center pt-1 border-t border-dashed border-gray-200 mt-1">
-                      <span>+ 運費/雜費</span>
-                      <span className="font-bold">${feePerPerson}</span>
+                      <span className="flex items-center gap-1"><User size={12}/> 運費分攤 (人頭計)</span>
+                      <span className="font-bold">+ ${feePerPerson}</span>
+                    </div>
+                  )}
+                  {/* 如果不是第一筆，顯示已併單 */}
+                  {feePerPerson > 0 && !isUserFirstOrder(order, orders) && (
+                    <div className="text-xs text-gray-400 flex justify-between items-center pt-1 mt-1">
+                      <span>運費已計入首筆訂單</span>
+                      <span>$0</span>
                     </div>
                   )}
                 </div>
@@ -466,7 +532,7 @@ export default function HostDashboard() {
                      )}
                      <div className="text-xs text-gray-400">總計</div>
                    </div>
-                   <div className={`font-black text-lg ${order.is_paid ? 'text-green-600' : 'text-gray-900'}`}>${order.total_price + feePerPerson}</div>
+                   <div className={`font-black text-lg ${order.is_paid ? 'text-green-600' : 'text-gray-900'}`}>${order.total_price + (isUserFirstOrder(order, orders) ? feePerPerson : 0)}</div>
                 </div>
               </div>
             ))}

@@ -1,557 +1,541 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
-  Plus, Minus, X, Coffee, Utensils, ShoppingBag, 
-  ChevronRight, Search, Flame, CheckCircle2, PenSquare, Trash2,
-  UserCheck, AlertTriangle, QrCode, Clock, Loader2, Wallet
+  Plus, Coffee, Utensils, Search, X, QrCode, Clock, 
+  ShoppingBag, PenSquare, ChevronRight, Wallet, Loader2, 
+  Flame, ScanLine
 } from 'lucide-react';
 import QRCode from "react-qr-code";
+import { Trash2 } from 'lucide-react'; 
 
-// 引入自定義 Hooks
-import { useCart, type CartItem } from '../hooks/useCart';
-import { useSmartPolling } from '../hooks/useSmartPolling';
+// Hooks
+// ★★★ 修正 1: 移除了 type CartItem，因為這個檔案沒用到它 ★★★
+import { useCart } from '../hooks/useCart';
+import { useRoomData } from '../hooks/useRoomData';
 
-// --- UI 專用型別定義 ---
-type ItemOption = { name: string; price: number };
-type ExtraOption = { n: string; p: number };
-type MenuItem = { 
-  n: string; p: number; is_drink: boolean; spicy?: boolean; description?: string; 
-  options: ItemOption[]; choices?: string[]; 
-};
-type Category = { name: string; items: MenuItem[]; };
-
-const SUGAR_LEVELS = ['正常糖', '少糖', '半糖', '微糖', '無糖'];
-const ICE_LEVELS = ['正常冰', '少冰', '微冰', '去冰', '溫', '熱'];
+// Components
+import ItemDetailModal from '../components/ItemDetailModal';
+import ManualEntryModal from '../components/ManualEntryModal';
+import NameEntryModal from '../components/NameEntryModal';
 
 export default function OrderRoom() {
   const { id } = useParams(); 
   const navigate = useNavigate();
-  
-  // --- 1. 使用 Hooks 管理核心邏輯 ---
-  // 購物車邏輯 (自動同步 LocalStorage)
-  const { cart, addToCart, removeFromCart, clearCart, totalCartPrice, totalCartCount } = useCart(id);
-  
-  // --- 2. 頁面狀態管理 ---
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [globalExtras, setGlobalExtras] = useState<ExtraOption[]>([]);
-  const [roomStatus, setRoomStatus] = useState<'OPEN' | 'LOCKED' | 'DELETED'>('OPEN');
-  
-  const isHost = localStorage.getItem(`isHost-${id}`) === 'true';
-  
   const [userName, setUserName] = useState(() => localStorage.getItem('userName') || '');
+  const [userToken] = useState(() => localStorage.getItem('userToken') || crypto.randomUUID());
   
-  // User Token (資安驗證用)
-  const [userToken] = useState(() => {
-    let token = localStorage.getItem('userToken');
-    if (!token) { token = crypto.randomUUID(); localStorage.setItem('userToken', token); }
-    return token;
-  });
+  // 1. 資料邏輯 Hook
+  const { 
+    roomInfo, categories, globalExtras, existingOrders, 
+    loading, error, timeLeft 
+  } = useRoomData(id, userName, userToken);
 
-  const [isNameSet, setIsNameSet] = useState(() => !!localStorage.getItem('userName'));
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  // 2. 購物車 Hook
+  const { cart, addToCart, removeFromCart, clearCart, totalCartPrice, totalCartCount } = useCart(id);
+
+  // 3. 頁面 UI 狀態
   const [activeCategory, setActiveCategory] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [isCheckingName, setIsCheckingName] = useState(false);
-  const [nameError, setNameError] = useState<string | null>(null);
-  const [existingOrders, setExistingOrders] = useState<any[]>([]);
-
-  // Item Modal State
-  const [selectedItem, setSelectedItem] = useState<MenuItem | null>(null);
-  const [count, setCount] = useState(1);
-  const [customOption, setCustomOption] = useState<ItemOption | null>(null);
-  const [customChoice, setCustomChoice] = useState<string>(''); 
-  const [selectedExtras, setSelectedExtras] = useState<ExtraOption[]>([]);
-  const [customSugar, setCustomSugar] = useState('正常糖');
-  const [customIce, setCustomIce] = useState('正常冰');
-  const [customNote, setCustomNote] = useState('');
-  
-  // Manual & Other Modals State
-  const [isManualOpen, setIsManualOpen] = useState(false);
-  const [manualName, setManualName] = useState('');
-  const [manualPrice, setManualPrice] = useState('');
-  const [manualNote, setManualNote] = useState('');
-  const [manualCount, setManualCount] = useState(1);
   const [isQrOpen, setIsQrOpen] = useState(false);
-  const [isCartOpen, setIsCartOpen] = useState(false);
+  const [isCartOpen, setIsCartOpen] = useState(false); // Mobile Only
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Time & QR Security State
-  const [deadline, setDeadline] = useState<number | null>(null);
-  const [timeLeft, setTimeLeft] = useState<{ str: string, isUrgent: boolean } | null>(null);
-  const [realGroupId, setRealGroupId] = useState<string>(''); 
-  const [hasPaymentQr, setHasPaymentQr] = useState(false);    
-  const [paymentQrImage, setPaymentQrImage] = useState<string | null>(null); 
+  // 4. Modals 狀態
+  const [selectedItem, setSelectedItem] = useState<any | null>(null);
+  const [isManualOpen, setIsManualOpen] = useState(false);
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
+  const [paymentQrImage, setPaymentQrImage] = useState<string | null>(null);
   const [isFetchingQr, setIsFetchingQr] = useState(false);
-  
-  // 儲存房間資訊 (為了拿 extra_fee)
-  const [roomInfo, setRoomInfo] = useState<any>(null);
 
-  // --- 3. 核心 API 請求與輪詢邏輯 ---
+  const [isBillModalOpen, setIsBillModalOpen] = useState(false);
 
-  // 封裝資料抓取邏輯 (使用 useCallback 避免不必要的重建)
-  const fetchData = useCallback(async () => {
-    try {
-      const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
-      
-      // A. 抓房間資訊
-      const roomRes = await fetch(`${apiUrl}/api/groups/${id}`);
-      if (!roomRes.ok) {
-        if (roomRes.status === 404) {
-          // 如果後端回傳 404，代表房間代碼無效或已刪除
-          navigate('/404', { replace: true }); 
-          return;
-        }
-        throw new Error('無法讀取房間資料');
-      }
-      
-      const roomData = await roomRes.json();
-      setRoomInfo(roomData);
-      setRoomStatus(roomData.status);
-      setHasPaymentQr(roomData.has_payment_qr);
-      setRealGroupId(roomData.id);
+  const isHost = localStorage.getItem(`isHost-${id}`) === 'true';
+  const isTimeUp = timeLeft?.str === '已截止' || roomInfo?.status === 'LOCKED';
 
-      // B. 解析菜單 (只在第一次或分類為空時執行，避免畫面重繪閃爍)
-      // 注意：這裡使用 functional update 或檢查當前 categories 狀態會比較好
-      // 但因為 categories 在 dependency，所以我們用 categories.length 檢查
-      if (categories.length === 0) {
-          if (roomData.menu.global_extras) setGlobalExtras(roomData.menu.global_extras);
-          if (roomData.deadline) setDeadline(roomData.deadline);
-          
-          let parsedCategories: Category[] = roomData.menu.categories || [{ name: '全部品項', items: roomData.menu.items }];
-          
-          // 確保每個 item 都有 options
-          parsedCategories.forEach(cat => {
-            cat.items = cat.items.map((item: any) => ({
-              ...item,
-              options: (item.options && item.options.length > 0) ? item.options : [{ name: '單一規格', price: item.p || 0 }]
-            }));
-          });
-          
-          setCategories(parsedCategories);
-          if (parsedCategories.length > 0) setActiveCategory(parsedCategories[0].name);
-      }
-
-      // C. 抓現有訂單
-      if (roomData.id) {
-          const oRes = await fetch(`${apiUrl}/api/groups/${roomData.id}/orders`);
-          if (oRes.ok) {
-             const ordersData = await oRes.json();
-             setExistingOrders(ordersData.orders || []);
-          }
-      }
-    } catch (e) { 
-      if(loading) setError('讀取失敗或房間已關閉'); 
-    } finally { 
-      setLoading(false); 
-    }
-  }, [id, categories.length, loading]); // 依賴項
-
-  // ★★★ 使用 Smart Polling (智慧輪詢) ★★★
-  // 每 4 秒更新一次，背景自動暫停
-  useSmartPolling(fetchData, 4000, true);
-
-  // 心跳機制 (維持在線狀態) - 這部分不需要太頻繁，保持原本 useEffect 即可
-  useSmartPolling(async () => {
-    if (isNameSet && userName && id) {
-      try {
-        const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
-        await fetch(`${apiUrl}/api/groups/${id}/join`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userName }) });
-      } catch (e) { console.error('心跳發送失敗', e); }
-    }
-  }, 10000, isNameSet && roomStatus !== 'LOCKED'); // 10秒一次心跳
-
-
-  // --- 4. 倒數計時邏輯 (純前端計算) ---
-  // 使用 Smart Polling 也可以，或者保留 setInterval (因為倒數需要每秒跳)
-  // 由於這是 UI 顯示，建議保留 setInterval 以確保秒數平滑
+  // 初始化 Category Tab
   useMemo(() => {
-    if (roomStatus === 'LOCKED') {
-      setTimeLeft(null);
-      return;
-    }
-    if (!deadline) return;
+    if (categories.length > 0 && !activeCategory) setActiveCategory(categories[0].name);
+  }, [categories, activeCategory]);
 
-    const timer = setInterval(() => {
-      const now = Date.now();
-      const diff = deadline - now;
-      
-      if (diff <= 0) {
-        setTimeLeft({ str: '已截止', isUrgent: false });
-      } else {
-        const m = Math.floor(diff / 60000);
-        const s = Math.floor((diff % 60000) / 1000);
-        setTimeLeft({ str: `剩餘 ${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`, isUrgent: diff < 5 * 60 * 1000 });
-      }
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [deadline, roomStatus]);
-
-
-  // --- 5. 互動處理邏輯 ---
-
-  const isTimeUp = timeLeft?.str === '已截止' || roomStatus === 'LOCKED';
-  const isSubmitDisabled = isSubmitting || cart.length === 0 || isTimeUp;
-
-  const fetchAndShowQr = async () => {
-    if (paymentQrImage) { setIsPayModalOpen(true); return; }
-    setIsFetchingQr(true);
-    try {
-      const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
-      const res = await fetch(`${apiUrl}/api/groups/${realGroupId}/payment-qr`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userName, userToken })
-      });
-      if (!res.ok) {
-        const err = await res.json();
-        alert(err.error || '無法讀取收款碼');
-        return;
-      }
-      const data = await res.json();
-      setPaymentQrImage(data.payment_qr);
-      setIsPayModalOpen(true);
-    } catch (e) { alert('讀取失敗，請確認網路'); } finally { setIsFetchingQr(false); }
-  };
-
-  const handleStartOrder = async () => { 
-    if (!userName.trim()) return; 
-    setIsCheckingName(true); 
-    setNameError(null); 
-    try { 
-        const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, ''); 
-        // 檢查名字是否重複 (可選)
-        const roomRes = await fetch(`${apiUrl}/api/groups/${id}`); 
-        const roomData = await roomRes.json(); 
-        const participantsRes = await fetch(`${apiUrl}/api/groups/${roomData.id}/participants`); 
-        const data = await participantsRes.json(); 
-        const exists = data.participants.some((p: any) => p.user_name.toLowerCase() === userName.trim().toLowerCase()); 
-        
-        if (exists) { 
-            setNameError('這個名字已經有人使用了'); 
-            setIsCheckingName(false); 
-        } else { 
-            localStorage.setItem('userName', userName); 
-            setIsNameSet(true); 
-        } 
-    } catch (e) { 
-        // 離線或錯誤時允許進入
-        localStorage.setItem('userName', userName); 
-        setIsNameSet(true); 
-    } 
-  };
-
-  const handleForceEnter = () => { localStorage.setItem('userName', userName); setIsNameSet(true); setNameError(null); };
-  
-  const getOrderSummary = (itemsJson: string) => { try { const items = JSON.parse(itemsJson); const counts: Record<string, number> = {}; items.forEach((item: any) => { const name = item.n.split(' (')[0]; counts[name] = (counts[name] || 0) + 1; }); return Object.entries(counts).map(([name, count]) => count > 1 ? `${name} x${count}` : name).join(', '); } catch { return ''; } };
-  
-  // Modal Openers
-  const openItemModal = (item: MenuItem) => { 
-      if (isTimeUp) return; 
-      setSelectedItem(item); setCount(1); setSelectedExtras([]); 
-      if (item.options?.length) setCustomOption(item.options[0]); 
-      setCustomChoice(item.choices?.[0] || ''); 
-      setCustomSugar('正常糖'); setCustomIce('正常冰'); setCustomNote(''); 
-  };
-  
-  const openManualModal = () => { if (isTimeUp) return; setManualName(''); setManualPrice(''); setManualNote(''); setManualCount(1); setIsManualOpen(true); };
-
-  // Cart Actions (Delegated to Hook)
-  const confirmAddToCart = () => { 
-      if (!selectedItem || !customOption) return; 
-      const unitPrice = customOption.price + selectedExtras.reduce((s, e) => s + e.p, 0); 
-      
-      const newItem: CartItem = { 
-          id: crypto.randomUUID(), 
-          n: selectedItem.n, 
-          price: unitPrice, 
-          count, 
-          optionName: customOption.name, 
-          choice: customChoice, 
-          extras: selectedExtras, 
-          sugar: selectedItem.is_drink ? customSugar : undefined, 
-          ice: selectedItem.is_drink ? customIce : undefined, 
-          note: customNote, 
-          owner: userName 
-      }; 
-      
-      addToCart(newItem); 
-      setSelectedItem(null); 
-  };
-  
-  const confirmAddManualItem = () => { 
-      if (!manualName.trim() || !manualPrice) return; 
-      addToCart({ 
-          id: crypto.randomUUID(), 
-          n: manualName, 
-          price: Number(manualPrice), 
-          count: manualCount, 
-          optionName: '手動輸入', 
-          note: manualNote, 
-          owner: userName 
-      }); 
-      setIsManualOpen(false); 
-  };
-
-  const handleCopyOrder = (orderItemsJson: string) => { 
-      if (isTimeUp) return; 
-      if(!confirm('確定要複製這張訂單的內容嗎？(會加入目前的購物車)')) return; 
-      try { 
-          const items = JSON.parse(orderItemsJson); 
-          items.forEach((item: any) => {
-              addToCart({ 
-                  id: crypto.randomUUID(), 
-                  n: item.n, 
-                  price: item.p, 
-                  count: 1, 
-                  optionName: '跟單', 
-                  note: item.note || '', 
-                  owner: userName 
-              });
-          });
-          alert('已加入購物車！'); 
-      } catch(e) { console.error(e); alert('複製失敗'); } 
-  };
-  
-  const handleSubmitOrder = async () => { 
-      if (isTimeUp) return alert('已停止收單'); 
-      if (cart.length === 0) return; 
-      setIsSubmitting(true); 
-      try { 
-          const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, ''); 
-          
-          // 再檢查一次狀態
-          const roomRes = await fetch(`${apiUrl}/api/groups/${id}`); 
-          const roomData = await roomRes.json(); 
-          if (roomData.status === 'LOCKED') throw new Error('主揪剛剛結單了'); 
-          
-          // 轉換格式給後端
-          const payloadItems = cart.flatMap(item => { 
-              if (item.optionName === '跟單' || item.optionName === '手動輸入') { 
-                  return Array(item.count).fill({ n: item.n + (item.note ? ` (備註:${item.note})` : ''), p: item.price }); 
-              } 
-              const extrasStr = item.extras?.length ? `[加:${item.extras.map(e => e.n).join(',')}]` : ''; 
-              return Array(item.count).fill({ n: `${item.n} (${item.optionName}) ${extrasStr} ${item.choice ? `[${item.choice}]` : ''} ${item.sugar || ''} ${item.ice || ''} ${item.note ? `(備註:${item.note})` : ''}`, p: item.price }); 
-          }); 
-          
-          const res = await fetch(`${apiUrl}/api/orders`, { 
-              method: 'POST', 
-              headers: { 'Content-Type': 'application/json' }, 
-              body: JSON.stringify({ groupId: roomData.id, userName, items: payloadItems, userToken }) 
-          }); 
-          
-          if (!res.ok) throw new Error('送出失敗'); 
-          
-          alert('訂單送出成功！'); 
-          clearCart(); // 使用 Hook 清空
-          setIsCartOpen(false); 
-      } catch (e) { alert(e instanceof Error ? e.message : '錯誤'); } finally { setIsSubmitting(false); } 
-  };
-  
-  // 計算過濾後的商品
-  const filteredItems = useMemo(() => { 
-      const items = searchQuery 
-          ? categories.flatMap(c => c.items) 
-          : (categories.find(c => c.name === activeCategory)?.items || []); 
-      return searchQuery ? items.filter(i => i.n.includes(searchQuery)) : items; 
+  // 過濾商品邏輯
+  const filteredItems = useMemo(() => {
+    const items = searchQuery 
+        ? categories.flatMap(c => c.items) 
+        : (categories.find(c => c.name === activeCategory)?.items || []);
+    return searchQuery ? items.filter(i => i.n.includes(searchQuery)) : items;
   }, [activeCategory, categories, searchQuery]);
 
-  const currentItemTotalPrice = ((customOption?.price || 0) + selectedExtras.reduce((s, e) => s + e.p, 0)) * count;
-  
-  // 運費計算 (UI顯示用)
-  const totalOrderCount = existingOrders.length;
-  const extraFeeTotal = roomInfo?.extra_fee || 0;
-  const rawAvg = totalOrderCount > 0 ? extraFeeTotal / totalOrderCount : 0;
-  const feePerPerson = Math.ceil(rawAvg / 5) * 5;
-  const myOrders = existingOrders.filter(o => o.user_name === userName);
-  const myOrderTotal = myOrders.reduce((sum, o) => sum + o.total_price, 0);
-  const myFinalTotal = myOrderTotal + (feePerPerson * myOrders.length);
+  // 送出訂單邏輯
+  const handleSubmitOrder = async () => {
+      if (isTimeUp || cart.length === 0) return;
+      setIsSubmitting(true);
+      try {
+          const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
+          const payloadItems = cart.flatMap(item => {
+              const baseName = item.optionName === '手動輸入' ? item.n : `${item.n} (${item.optionName})`;
+              const details = [
+                  item.extras?.length ? `[加:${item.extras.map(e => e.n).join(',')}]` : '',
+                  item.choice ? `[${item.choice}]` : '',
+                  item.sugar, item.ice,
+                  item.note ? `(備註:${item.note})` : ''
+              ].filter(Boolean).join(' ');
+              
+              return Array(item.count).fill({ n: `${baseName} ${details}`, p: item.price });
+          });
 
-  // --- Sub Component: Cart Content ---
-  const CartContent = () => ( 
-    <> 
-      <div className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar"> 
-        {cart.map(item => ( 
-            <div key={item.id} className="flex justify-between bg-white p-3 rounded-xl shadow-sm border border-gray-100"> 
-                <div> 
-                    <div className="font-bold text-gray-800 flex items-center gap-2">{item.n} {item.count > 1 && <span className="text-xs bg-black text-white px-2 py-0.5 rounded-full">x{item.count}</span>}</div> 
-                    <div className="text-xs text-gray-500 mt-1 flex flex-wrap gap-1"> 
-                        <span className="bg-gray-100 px-1 rounded">{item.optionName}</span> 
-                        {item.extras?.map(e => <span key={e.n} className="bg-orange-50 text-orange-700 px-1 rounded">+ {e.n}</span>)} 
-                        {item.sugar && <span className="bg-blue-50 text-blue-600 px-1 rounded">{item.sugar}</span>} 
-                        {item.ice && <span className="bg-cyan-50 text-cyan-600 px-1 rounded">{item.ice}</span>} 
-                        {item.note && <span className="text-gray-400">({item.note})</span>} 
-                    </div> 
-                </div> 
-                <div className="flex flex-col items-end justify-between">
-                    <span className="font-bold">${item.price * item.count}</span>
-                    <button onClick={() => removeFromCart(item.id)} className="text-gray-300 hover:text-red-500"><Trash2 size={16}/></button>
-                </div> 
-            </div> 
-        ))} 
-        {cart.length === 0 && <div className="text-center text-gray-400 py-10">購物車是空的 🛒</div>} 
-      </div> 
-      <div className="bg-white p-6 border-t border-gray-100"> 
-        <div className="flex justify-between items-center mb-4"><span className="text-gray-500 font-bold">總計金額</span><span className="text-3xl font-black text-gray-900">${totalCartPrice}</span></div> 
-        <button 
-          onClick={handleSubmitOrder} 
-          disabled={isSubmitDisabled} 
-          className={`w-full text-white py-4 rounded-2xl font-bold text-lg transition-all shadow-lg ${isSubmitDisabled ? 'bg-gray-400 cursor-not-allowed' : 'bg-gray-900 hover:bg-black'}`}
-        > 
-          {roomStatus === 'LOCKED' ? '已結單' : isTimeUp ? '時間已到 (停止收單)' : isSubmitting ? '傳送中...' : '確認送出 🚀'} 
-        </button> 
-      </div> 
-    </> 
-  );
+          const res = await fetch(`${apiUrl}/api/orders`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ groupId: roomInfo?.id, userName, items: payloadItems, userToken })
+          });
+          if (!res.ok) throw new Error('送出失敗');
+          alert('訂單送出成功！');
+          clearCart();
+          setIsCartOpen(false);
+      } catch (e) { alert('錯誤：' + e); } finally { setIsSubmitting(false); }
+  };
 
-  // --- Render Logic ---
+  const handleFetchPaymentQr = async () => {
+      if (paymentQrImage) { setIsPayModalOpen(true); return; }
+      setIsFetchingQr(true);
+      try {
+        const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
+        const res = await fetch(`${apiUrl}/api/groups/${roomInfo?.id}/payment-qr`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ userName, userToken })
+        });
+        const data = await res.json();
+        if (data.payment_qr) { setPaymentQrImage(data.payment_qr); setIsPayModalOpen(true); }
+        else alert(data.error || '無法取得');
+      } catch(e) { alert('讀取失敗'); } finally { setIsFetchingQr(false); }
+  };
+
+  const getOrderSummary = (itemsJson: string) => {
+    try {
+      const items = JSON.parse(itemsJson);
+      const counts: Record<string, number> = {};
+      items.forEach((item: any) => {
+        // 去除詳細備註，只留主名稱，讓顯示簡潔一點
+        const name = item.n.split(' (')[0];
+        counts[name] = (counts[name] || 0) + 1;
+      });
+      return Object.entries(counts)
+        .map(([name, count]) => count > 1 ? `${name} x${count}` : name)
+        .join(', ');
+    } catch { return '內容解析失敗'; }
+  };
+
+  // 處理「跟單」(+1) 功能
+  const handleCopyOrder = (orderItemsJson: string) => {
+    if (isTimeUp) return;
+    if (!confirm('確定要複製這張訂單的內容嗎？(會加入目前的購物車)')) return;
+    
+    try {
+      const items = JSON.parse(orderItemsJson);
+      items.forEach((item: any) => {
+        // 將歷史訂單轉換為購物車項目格式
+        addToCart({
+          id: crypto.randomUUID(),
+          n: item.n, // 這裡已經包含原本的選項描述
+          price: item.p,
+          count: 1,
+          optionName: '跟單', // 標記為跟單
+          note: item.note || '',
+          owner: userName
+        });
+      });
+      alert('已加入購物車！');
+    } catch (e) {
+      console.error(e);
+      alert('複製失敗');
+    }
+  };
+
+  const myBillData = useMemo(() => {
+    if (!roomInfo || existingOrders.length === 0) return null;
+
+    // 1. 找出我的所有訂單
+    const myOrders = existingOrders.filter(o => o.user_name === userName);
+    if (myOrders.length === 0) return null;
+
+    const uniqueUserNames = new Set(existingOrders.map(o => o.user_name));
+    const totalUserCount = uniqueUserNames.size;
+
+    const extraFeeTotal = roomInfo.extra_fee || 0;
+    const rawFeePerPerson = totalUserCount > 0 ? extraFeeTotal / totalUserCount : 0;
+    
+    const feePerPerson = Math.ceil(rawFeePerPerson / 5) * 5;
+
+    const myItems = myOrders.flatMap(o => {
+        try { return JSON.parse(o.items_json); } catch { return []; }
+    });
+    const subtotal = myOrders.reduce((sum, o) => sum + o.total_price, 0);
+    const myTotalFee = feePerPerson; 
+    const finalTotal = subtotal + myTotalFee;
+
+    return { myItems, subtotal, myTotalFee, finalTotal, feePerPerson, orderCount: myOrders.length };
+  }, [existingOrders, roomInfo, userName]);
+
+  // --- Render ---
 
   if (loading) return <div className="min-h-screen flex justify-center items-center text-orange-500 animate-pulse">載入美味菜單中...</div>;
   if (error) return <div className="min-h-screen flex flex-col justify-center items-center text-gray-500"><p>{error}</p></div>;
-  
-  // Name Entry Modal (保持不變)
-  if (!isNameSet) { return ( <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-gray-900/60 backdrop-blur-md"> <div className="bg-white w-full max-w-sm p-8 rounded-3xl shadow-2xl text-center space-y-6 animate-in zoom-in-95"> <div className="w-20 h-20 bg-orange-100 rounded-full flex items-center justify-center mx-auto mb-4"> <UserCheck size={40} className="text-orange-500" /> </div> <div><h2 className="text-2xl font-bold text-gray-800">歡迎點餐</h2><p className="text-gray-500 text-sm mt-1">請輸入你的暱稱，方便主揪分餐</p></div> <div className="relative"> <input autoFocus type="text" value={userName} onChange={(e) => { setUserName(e.target.value); setNameError(null); }} onKeyDown={(e) => e.key === 'Enter' && handleStartOrder()} placeholder="輸入你的暱稱" className={`w-full text-center text-xl font-bold py-3 border-b-2 bg-transparent focus:outline-none transition-colors ${nameError ? 'border-red-500 text-red-600' : 'border-orange-100 focus:border-orange-500'}`} /> {nameError && (<div className="text-red-500 text-xs mt-2 flex items-center justify-center gap-1"><AlertTriangle size={12} /> {nameError}</div>)} </div> {nameError ? ( <div className="flex gap-2"> <button onClick={() => { setUserName(''); setNameError(null); }} className="flex-1 bg-gray-100 text-gray-600 py-3 rounded-xl font-bold hover:bg-gray-200">換個名字</button> <button onClick={handleForceEnter} className="flex-1 bg-orange-600 text-white py-3 rounded-xl font-bold hover:bg-orange-700">是我本人</button> </div> ) : ( <button onClick={handleStartOrder} disabled={!userName.trim() || isCheckingName} className="w-full bg-gradient-to-r from-orange-500 to-orange-600 text-white py-4 rounded-2xl font-bold shadow-lg shadow-orange-200 hover:shadow-xl hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50">{isCheckingName ? '檢查中...' : '開始點餐'}</button> )} </div> </div> ); }
 
+  // ★★★ 修正 2: 移除了 roomId 屬性，因為 NameEntryModal 不需要它了 ★★★
+  if (!userName) return <NameEntryModal roomId={id} onNameSet={setUserName} userToken={userToken} />;
+
+  // Cart UI Component
+  const CartUI = () => (
+    <>
+      <div className="flex-1 overflow-y-auto p-4 custom-scrollbar space-y-3">
+        {cart.map(item => (
+            <div key={item.id} className="flex justify-between bg-white p-3 rounded-xl shadow-sm border border-gray-100">
+                <div>
+                    <div className="font-bold text-gray-800">{item.n} {item.count > 1 && `x${item.count}`}</div>
+                    <div className="text-xs text-gray-500 mt-1">{item.optionName} {item.note && `(${item.note})`}</div>
+                </div>
+                <div className="flex flex-col items-end justify-between">
+                    <span className="font-bold">${item.price * item.count}</span>
+                    <button onClick={() => removeFromCart(item.id)} className="text-gray-300 hover:text-red-500"><Trash2 size={16}/></button>
+                </div>
+            </div>
+        ))}
+        {cart.length === 0 && <div className="text-center text-gray-400 py-10">購物車是空的 🛒</div>}
+      </div>
+      <div className="bg-white p-6 border-t border-gray-100">
+        <div className="flex justify-between items-center mb-4"><span className="text-gray-500 font-bold">總計</span><span className="text-3xl font-black text-gray-900">${totalCartPrice}</span></div>
+        
+        {/* ★★★ 修改開始：在按鈕中加入數量顯示 ★★★ */}
+        <button 
+            onClick={handleSubmitOrder} 
+            disabled={isSubmitting || cart.length === 0 || isTimeUp} 
+            className={`w-full text-white py-4 rounded-2xl font-bold text-lg shadow-lg flex items-center justify-center gap-2 transition-all ${isTimeUp || cart.length === 0 ? 'bg-gray-400 cursor-not-allowed' : 'bg-gray-900 hover:bg-black hover:scale-[1.01] active:scale-95'}`}
+        >
+            {isTimeUp ? '已截止' : isSubmitting ? '傳送中...' : (
+                <>
+                    <span>確認送出 🚀</span>
+                    {totalCartCount > 0 && (
+                        <span className="bg-red-500 text-white text-xs px-2.5 py-1 rounded-full animate-bounce shadow-sm">
+                            {totalCartCount}
+                        </span>
+                    )}
+                </>
+            )}
+        </button>
+        {/* ★★★ 修改結束 ★★★ */}
+        
+      </div>
+    </>
+  );
+  
   return (
     <div className="min-h-screen bg-[#F3F4F6] lg:flex lg:justify-center">
-      <style>{`.custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; } .custom-scrollbar::-webkit-scrollbar-track { background: transparent; } .custom-scrollbar::-webkit-scrollbar-thumb { background-color: #4b5563; border-radius: 20px; } .custom-scrollbar::-webkit-scrollbar-thumb:hover { background-color: #1f2937; }`}</style>
       <div className="w-full max-w-7xl lg:flex lg:gap-8 lg:p-8">
+        
+        {/* Main Content */}
         <div className="flex-1 min-w-0 bg-white lg:rounded-3xl lg:shadow-xl lg:overflow-hidden flex flex-col h-screen lg:h-[calc(100vh-4rem)]">
-          <div className="sticky top-0 z-30 bg-white border-b border-gray-100 shadow-sm lg:shadow-none">
-            {/* Header 狀態列 */}
-            {roomStatus === 'LOCKED' ? (
-              <div className="bg-red-500 text-white text-center text-xs font-bold py-1 flex items-center justify-center gap-2">
-                <span>⛔ 主揪已結單</span>
-              </div>
-            ) : timeLeft ? (
-              <div className={`text-center text-xs font-bold py-1 flex items-center justify-center gap-1 transition-colors ${timeLeft.str === '已截止' ? 'bg-gray-800 text-white' : timeLeft.isUrgent ? 'bg-red-500 text-white animate-pulse' : 'bg-green-500 text-white'}`}>
-                 {timeLeft.str === '已截止' ? <Clock size={12}/> : timeLeft.isUrgent ? <Flame size={12} fill="currentColor"/> : <Clock size={12}/>}
-                 {timeLeft.str === '已截止' 
-                    ? '⏳ 時間到，已截止收單 (等待主揪結算...)' 
-                    : timeLeft.isUrgent 
-                        ? `🔥 最後 ${timeLeft.str.replace('剩餘 ', '')}，快點餐！` 
-                        : timeLeft.str
-                 }
-              </div>
-            ) : null}
-
-            {/* Header Content */}
-            <div className="px-4 py-3 flex justify-between items-center">
-              <div><div className="text-xs text-gray-400 font-bold">Room Code</div><div className="text-xl font-black text-gray-800 tracking-wider">{id}</div></div>
-              <div className="flex gap-2 items-center">
-                <button onClick={() => navigate(`/room/${id}/host`)} className={`text-xs px-3 py-1.5 rounded-full font-bold transition-colors ${isHost ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600'}`}>{isHost ? '主揪儀表板' : '看看別人'}</button>
-                <button onClick={() => setIsQrOpen(true)} className="bg-gray-100 text-gray-600 p-1.5 rounded-full hover:bg-gray-200 transition-colors" title="顯示房間 QR Code"><QrCode size={20} /></button>
-                <div className="text-sm font-bold bg-orange-50 text-orange-600 px-3 py-1.5 rounded-full border border-orange-100">{userName}</div>
-              </div>
-            </div>
-
-            <div className="px-4 pb-2">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-                <input type="text" placeholder="搜尋想吃的..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full bg-gray-100 rounded-xl pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-200" />
-                {searchQuery && (<button onClick={()=>setSearchQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400"><X size={16}/></button>)}
-              </div>
-            </div>
-
-            {!searchQuery && (
-              <div className="flex overflow-x-auto px-4 py-2 gap-2 no-scrollbar border-t border-gray-50">
-                {categories.map(cat => (<button key={cat.name} onClick={() => setActiveCategory(cat.name)} className={`whitespace-nowrap px-4 py-1.5 rounded-full text-sm font-bold transition-all ${activeCategory === cat.name ? 'bg-gray-900 text-white' : 'bg-white text-gray-500 border border-gray-200 hover:bg-gray-50'}`}>{cat.name}</button>))}
-              </div>
-            )}
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
             
-            {/* 置頂帳單卡片 */}
-            {roomStatus === 'LOCKED' && hasPaymentQr && myOrders.length > 0 && (
-              <div className="mb-6 bg-white rounded-2xl p-5 border-2 border-orange-100 shadow-md relative overflow-hidden group">
-                <div className="absolute top-0 right-0 w-24 h-24 bg-orange-100 rounded-full -translate-y-1/2 translate-x-1/3 opacity-50 group-hover:scale-110 transition-transform"></div>
-                <div className="relative z-10">
-                   <h3 className="font-bold text-gray-800 text-lg flex items-center gap-2 mb-2">👋 嗨 {userName}，結單囉！</h3>
-                   <div className="text-gray-500 text-sm mb-4">
-                     餐點 ${myOrderTotal} + 運費 ${feePerPerson * myOrders.length}
-                     <div className="mt-1 flex items-baseline gap-2"><span>應付總額:</span><span className="font-black text-3xl text-gray-900">${myFinalTotal}</span></div>
-                   </div>
-                   <button onClick={fetchAndShowQr} disabled={isFetchingQr} className="w-full bg-gray-900 text-white py-3.5 rounded-xl font-bold flex items-center justify-center gap-2 shadow-lg shadow-gray-200 hover:bg-black active:scale-[0.98] transition-all">
-                     {isFetchingQr ? <Loader2 className="animate-spin" /> : <Wallet size={20} />} {isFetchingQr ? '驗證中...' : '顯示收款 QR Code'}
-                   </button>
+            {/* Header: Status & Info */}
+            <div className="sticky top-0 z-30 bg-white border-b border-gray-100 shadow-sm">
+                {timeLeft && (
+                  <div className={`text-center text-xs font-bold py-1 flex items-center justify-center gap-1 text-white ${timeLeft.str === '已截止' ? 'bg-gray-800' : timeLeft.isUrgent ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`}>
+                     <Clock size={12}/> {timeLeft.str}
+                  </div>
+                )}
+                <div className="px-4 py-3 flex justify-between items-center">
+                    <div><div className="text-xs text-gray-400 font-bold">Room Code</div><div className="text-xl font-black text-gray-800">{id}</div></div>
+                    <div className="flex gap-2 items-center">
+                        <button onClick={() => navigate(`/room/${id}/host`)} className={`text-xs px-3 py-1.5 rounded-full font-bold ${isHost ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600'}`}>{isHost ? '主揪後台' : '查看訂單'}</button>
+                        <button onClick={() => setIsQrOpen(true)} className="bg-gray-100 text-gray-600 p-1.5 rounded-full"><QrCode size={20} /></button>
+                        <div className="text-sm font-bold bg-orange-50 text-orange-600 px-3 py-1.5 rounded-full border border-orange-100">{userName}</div>
+                    </div>
                 </div>
-              </div>
-            )}
+                {/* Search & Tabs */}
+                <div className="px-4 pb-2">
+                    {/* 修正：加入一個 relative 的 wrapper，讓 icon 定位更精準 */}
+                    <div className="relative w-full">
+                        <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+                            <Search size={18} />
+                        </div>
+                        <input 
+                            type="text" 
+                            placeholder="找不到嗎？搜尋你想吃的..." 
+                            value={searchQuery} 
+                            onChange={e => setSearchQuery(e.target.value)} 
+                            className="w-full bg-gray-100 rounded-xl pl-10 pr-4 py-2.5 text-sm outline-none focus:ring-2 focus:ring-orange-200 transition-all" 
+                        />
+                    </div>
+                </div>
+                {!searchQuery && (
+                  <div className="flex overflow-x-auto px-4 py-2 gap-2 no-scrollbar border-t border-gray-50">
+                    {categories.map(cat => (
+                        <button key={cat.name} onClick={() => setActiveCategory(cat.name)} className={`whitespace-nowrap px-4 py-1.5 rounded-full text-sm font-bold ${activeCategory === cat.name ? 'bg-gray-900 text-white' : 'bg-white text-gray-500 border'}`}>{cat.name}</button>
+                    ))}
+                  </div>
+                )}
+            </div>
 
-            {existingOrders.length > 0 && !searchQuery && (
+            {/* Content: Payment Card & Products */}
+            <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                {roomInfo?.status === 'LOCKED' && myBillData && (
+                <div className="mb-6 bg-white rounded-2xl p-5 border-2 border-orange-100 shadow-lg relative overflow-hidden">
+                    {/* 背景裝飾 */}
+                    <div className="absolute top-0 right-0 -mt-2 -mr-2 w-16 h-16 bg-orange-100 rounded-full blur-xl opacity-50 pointer-events-none"></div>
+                    
+                    <h3 className="font-bold text-gray-800 mb-1 text-lg">
+                      👋 嗨，{userName} 結單囉！
+                    </h3>
+                    <p className="text-sm text-gray-500 mb-4">
+                      ✨ 請確認金額並完成付款，感謝你的配合～ ❤️
+                    </p>
+
+                    <div className="grid grid-cols-2 gap-3">
+                        {/* 按鈕 A: 查看帳單 */}
+                        <button 
+                          onClick={() => setIsBillModalOpen(true)}
+                          className="bg-orange-50 text-orange-700 border border-orange-200 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-orange-100 transition-colors"
+                        >
+                           <ShoppingBag size={18} /> 查看帳單明細
+                        </button>
+
+                        {/* 按鈕 B: 顯示收款碼 (如果有上傳的話) */}
+                        {roomInfo.has_payment_qr ? (
+                           <button 
+                             onClick={handleFetchPaymentQr} 
+                             disabled={isFetchingQr} 
+                             className="bg-gray-900 text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-black transition-colors"
+                           >
+                                {isFetchingQr ? <Loader2 className="animate-spin" size={18}/> : <Wallet size={18}/>} 
+                                轉帳 QR
+                           </button>
+                        ) : (
+                           <div className="bg-gray-100 text-gray-400 py-3 rounded-xl font-bold flex items-center justify-center gap-2 cursor-not-allowed text-sm">
+                              無收款碼
+                           </div>
+                        )}
+                    </div>
+                </div>
+            )}
+              
+              {existingOrders.length > 0 && !searchQuery && (
               <div className="mb-6 bg-orange-50 p-4 rounded-2xl border border-orange-100">
-                <h3 className="font-bold text-orange-800 mb-3 flex items-center gap-2 text-sm"><Flame size={16}/> 大家都在點什麼</h3>
+                <h3 className="font-bold text-orange-800 mb-3 flex items-center gap-2 text-sm">
+                  <Flame size={16} fill="currentColor" /> 大家都在點什麼
+                </h3>
                 <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
                   {existingOrders.map((order) => (
                     <div key={order.id} className="min-w-[220px] bg-white p-3 rounded-xl shadow-sm border border-orange-100 flex flex-col justify-between">
-                      <div><div className="font-bold text-sm text-gray-800 mb-1">{order.user_name}</div><div className="text-xs text-gray-500 line-clamp-2 mb-2">{getOrderSummary(order.items_json)}</div></div>
-                      <button onClick={() => handleCopyOrder(order.items_json)} className={`w-full text-xs font-bold py-1.5 rounded-lg border whitespace-nowrap transition-colors ${isTimeUp ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed' : 'bg-orange-100 text-orange-600 border-orange-200 hover:bg-orange-200'}`}>+1 跟單 (${order.total_price})</button>
+                      <div>
+                        <div className="font-bold text-sm text-gray-800 mb-1">{order.user_name}</div>
+                        <div className="text-xs text-gray-500 line-clamp-2 mb-2 min-h-[2.5em]">
+                          {getOrderSummary(order.items_json)}
+                        </div>
+                      </div>
+                      <button 
+                        onClick={() => handleCopyOrder(order.items_json)} 
+                        disabled={isTimeUp}
+                        className={`w-full text-xs font-bold py-1.5 rounded-lg border whitespace-nowrap transition-colors ${isTimeUp ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed' : 'bg-orange-100 text-orange-600 border-orange-200 hover:bg-orange-200'}`}
+                      >
+                        +1 跟單 (${order.total_price})
+                      </button>
                     </div>
                   ))}
                 </div>
               </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 pb-24 lg:pb-0">
-              {filteredItems.map((item, idx) => (
-                <div key={idx} onClick={() => openItemModal(item)} className={`bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex justify-between items-start transition-all hover:shadow-md cursor-pointer ${isTimeUp && 'opacity-60 grayscale pointer-events-none'}`}>
-                  <div className="flex gap-4 items-start">
-                    <div className="relative">
-                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 ${item.is_drink ? 'bg-blue-50 text-blue-500' : 'bg-orange-50 text-orange-500'}`}>{item.is_drink ? <Coffee size={24} /> : <Utensils size={24} />}</div>
-                      {item.spicy && <div className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full p-1 border-2 border-white"><Flame size={10} fill="currentColor" /></div>}
-                    </div>
-                    <div><h3 className="font-bold text-gray-800 text-lg leading-tight mb-1">{item.n}</h3>{item.description && <p className="text-xs text-gray-400 line-clamp-1 mb-1">{item.description}</p>}<p className="text-gray-900 font-bold text-sm">${item.options[0].price}</p></div>
-                  </div>
-                  <div className="w-8 h-8 rounded-full bg-gray-50 text-gray-400 flex items-center justify-center hover:bg-orange-500 hover:text-white"><Plus size={18} /></div>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 pb-24 lg:pb-0">
+                    {filteredItems.map((item, idx) => (
+                        <div key={idx} onClick={() => setSelectedItem(item)} className={`bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex justify-between items-start cursor-pointer hover:shadow-md ${isTimeUp && 'opacity-60 grayscale pointer-events-none'}`}>
+                            <div className="flex gap-4 items-start">
+                                <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 ${item.is_drink ? 'bg-blue-50 text-blue-500' : 'bg-orange-50 text-orange-500'}`}>{item.is_drink ? <Coffee size={24} /> : <Utensils size={24} />}</div>
+                                <div><h3 className="font-bold text-gray-800 text-lg leading-tight mb-1">{item.n}</h3>
+                                <p className="text-gray-900 font-bold text-sm">${item.p + item.options[0].price}</p></div>
+                            </div>
+                            <div className="w-8 h-8 rounded-full bg-gray-50 text-gray-400 flex items-center justify-center"><Plus size={18} /></div>
+                        </div>
+                    ))}
+                    {!isTimeUp && ( <button onClick={() => setIsManualOpen(true)} className="w-full bg-white border-2 border-dashed border-gray-300 rounded-2xl p-6 text-gray-400 font-bold flex flex-col items-center justify-center gap-2 hover:border-orange-400 hover:text-orange-500 min-h-[100px]"><PenSquare size={24} /> 手動輸入</button> )}
                 </div>
-              ))}
-              {!isTimeUp && ( <button onClick={openManualModal} className="w-full bg-white border-2 border-dashed border-gray-300 rounded-2xl p-6 text-gray-400 font-bold flex flex-col items-center gap-2 hover:border-orange-400 hover:text-orange-500 transition-colors h-full justify-center min-h-[100px]"><PenSquare size={24} /> 找不到？手動輸入</button> )}
             </div>
-            {filteredItems.length === 0 && <div className="text-center text-gray-400 py-12">找不到符合的餐點 🍜</div>}
-          </div>
         </div>
+
+        {/* Sidebar Cart (Desktop) */}
         <div className="hidden lg:flex w-96 bg-white rounded-3xl shadow-xl flex-col h-[calc(100vh-4rem)] sticky top-8 overflow-hidden">
-          <div className="p-6 border-b border-gray-100 bg-gray-50"><h3 className="text-xl font-bold flex items-center gap-2"><ShoppingBag className="text-orange-500"/> 購物車</h3></div>
-          <CartContent />
+            <div className="p-6 border-b border-gray-100 bg-gray-50"><h3 className="text-xl font-bold flex items-center gap-2"><ShoppingBag className="text-orange-500"/> 購物車</h3></div>
+            <CartUI />
         </div>
       </div>
-      {cart.length > 0 && ( <div className="lg:hidden fixed bottom-6 left-4 right-4 z-30 animate-in slide-in-from-bottom-4"> <button onClick={() => setIsCartOpen(true)} className="w-full bg-gray-900/95 backdrop-blur-md text-white p-4 rounded-2xl shadow-2xl flex justify-between items-center"> <div className="flex items-center gap-4"><div className="bg-orange-500 text-white w-10 h-10 rounded-full flex items-center justify-center font-bold">{totalCartCount}</div><div className="flex flex-col items-start"><span className="text-xs text-gray-400 font-medium">預計</span><span className="font-bold text-xl">${totalCartPrice}</span></div></div> <div className="flex items-center gap-1 font-bold text-orange-400">去結帳 <ChevronRight size={18} /></div> </button> </div> )}
+
+      {/* Mobile Cart Button & Modal */}
+      {cart.length > 0 && (
+          <div className="lg:hidden fixed bottom-6 left-4 right-4 z-30 animate-in slide-in-from-bottom-4">
+              <button onClick={() => setIsCartOpen(true)} className="w-full bg-gray-900/95 backdrop-blur-md text-white p-4 rounded-2xl shadow-2xl flex justify-between items-center">
+                  <div className="flex items-center gap-4"><div className="bg-orange-500 text-white w-10 h-10 rounded-full flex items-center justify-center font-bold">{totalCartCount}</div><div className="flex flex-col items-start"><span className="text-xs text-gray-400 font-medium">預計</span><span className="font-bold text-xl">${totalCartPrice}</span></div></div>
+                  <div className="flex items-center gap-1 font-bold text-orange-400">去結帳 <ChevronRight size={18} /></div>
+              </button>
+          </div>
+      )}
+      {isCartOpen && (
+          <div className="lg:hidden fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-sm" onClick={() => setIsCartOpen(false)}>
+              <div className="bg-[#F8F9FA] w-full max-w-md h-[85vh] rounded-t-3xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-10" onClick={e => e.stopPropagation()}>
+                  <div className="bg-white px-6 py-5 border-b border-gray-100 flex justify-between items-center shrink-0">
+                      <h3 className="text-xl font-bold text-gray-900 flex items-center gap-2"><ShoppingBag className="text-orange-500"/> 購物車</h3>
+                      <button onClick={() => setIsCartOpen(false)} className="p-2 bg-gray-50 rounded-full hover:bg-gray-100"><X size={20}/></button>
+                  </div>
+                  <CartUI />
+              </div>
+          </div>
+      )}
+
+      {/* Modals */}
+      <ItemDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} onAddToCart={addToCart} globalExtras={globalExtras} userName={userName} isTimeUp={isTimeUp} />
+      <ManualEntryModal isOpen={isManualOpen} onClose={() => setIsManualOpen(false)} onConfirm={addToCart} userName={userName} />
       
-      {/* Item Modal */}
-      {selectedItem && ( <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center bg-black/40 backdrop-blur-sm p-0 md:p-4" onClick={() => setSelectedItem(null)}> <div className="bg-white w-full max-w-md rounded-t-3xl md:rounded-3xl p-6 pb-8 md:p-6 space-y-4 shadow-2xl animate-in slide-in-from-bottom-10 md:zoom-in-95 max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}> <div className="flex justify-between items-start border-b border-gray-100 pb-4 shrink-0"> <div><h3 className="text-2xl font-bold text-gray-900 flex items-center gap-2">{selectedItem.n} {selectedItem.spicy && <Flame size={20} className="text-red-500" fill="currentColor"/>}</h3></div> <button onClick={() => setSelectedItem(null)} className="p-2 bg-gray-50 rounded-full hover:bg-gray-100"><X size={20}/></button> </div> <div className="space-y-6 overflow-y-auto custom-scrollbar px-1 flex-1 py-2"> 
-          <div className="space-y-3"><label className="text-xs font-bold text-gray-400 uppercase tracking-wider">規格</label><div className="flex flex-wrap gap-2">{selectedItem.options.map(opt => (<button key={opt.name} onClick={() => setCustomOption(opt)} className={`px-4 py-3 rounded-xl border text-sm font-bold flex items-center gap-2 ${customOption?.name === opt.name ? 'border-orange-500 bg-orange-50 text-orange-700 ring-1 ring-orange-500' : 'border-gray-100 text-gray-600 hover:bg-gray-50'}`}>{opt.name === '單一規格' ? '一份' : opt.name} <span className="bg-white/50 px-1.5 rounded text-xs opacity-70 border border-black/5">${opt.price}</span></button>))}</div></div> {selectedItem.is_drink && globalExtras.length > 0 && (<div className="space-y-3"><label className="text-xs font-bold text-gray-400 uppercase tracking-wider flex items-center gap-1">✨ 加點配料</label><div className="grid grid-cols-2 gap-2">{globalExtras.map(extra => (<button key={extra.n} onClick={() => setSelectedExtras(prev => prev.find(e => e.n === extra.n) ? prev.filter(e => e.n !== extra.n) : [...prev, extra])} className={`px-4 py-3 rounded-xl border text-sm font-bold flex justify-between items-center ${selectedExtras.some(e=>e.n===extra.n) ? 'border-orange-500 bg-orange-50 text-orange-700 ring-1' : 'border-gray-100 text-gray-600'}`}><span className="flex items-center gap-2">{selectedExtras.some(e=>e.n===extra.n) && <CheckCircle2 size={14} />}{extra.n}</span><span className="text-xs text-gray-400">+${extra.p}</span></button>))}</div></div>)} {selectedItem.is_drink && (<div className="grid grid-cols-1 md:grid-cols-2 gap-4"><div className="space-y-3"><label className="text-xs font-bold text-gray-400 uppercase tracking-wider">甜度</label><div className="flex flex-wrap gap-2">{SUGAR_LEVELS.map(l => <button key={l} onClick={() => setCustomSugar(l)} className={`px-3 py-2 rounded-lg text-sm border ${customSugar === l ? 'border-blue-500 bg-blue-50 text-blue-700 font-bold' : 'border-gray-100 bg-white text-gray-600'}`}>{l}</button>)}</div></div><div className="space-y-3"><label className="text-xs font-bold text-gray-400 uppercase tracking-wider">冰塊</label><div className="flex flex-wrap gap-2">{ICE_LEVELS.map(l => <button key={l} onClick={() => setCustomIce(l)} className={`px-3 py-2 rounded-lg text-sm border ${customIce === l ? 'border-cyan-500 bg-cyan-50 text-cyan-700 font-bold' : 'border-gray-100 bg-white text-gray-600'}`}>{l}</button>)}</div></div></div>)} {selectedItem.choices?.length ? (<div className="space-y-3"><label className="text-xs font-bold text-gray-400 uppercase tracking-wider">選項</label><div className="flex flex-wrap gap-2">{selectedItem.choices.map(c => <button key={c} onClick={() => setCustomChoice(c)} className={`px-4 py-2 rounded-xl border text-sm font-bold ${customChoice === c ? 'border-blue-500 bg-blue-50 text-blue-600 ring-1' : 'border-gray-100 text-gray-600'}`}>{c}</button>)}</div></div>) : null} <div className="space-y-3"><label className="text-xs font-bold text-gray-400 uppercase tracking-wider">備註</label><input type="text" value={customNote} onChange={e => setCustomNote(e.target.value)} placeholder="備註..." className="w-full p-4 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-orange-200 outline-none" /></div> <div className="space-y-3"><label className="text-xs font-bold text-gray-400 uppercase tracking-wider">數量</label><div className="flex items-center gap-4 bg-gray-50 p-2 rounded-xl border border-gray-100 w-fit"><button onClick={() => setCount(c => Math.max(1, c - 1))} className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border hover:bg-gray-100"><Minus size={20} /></button><span className="text-xl font-bold text-gray-800 w-8 text-center">{count}</span><button onClick={() => setCount(c => c + 1)} className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border hover:bg-gray-100"><Plus size={20}/></button></div></div> 
-      </div> <div className="pt-2 shrink-0 border-t border-gray-100"><button onClick={confirmAddToCart} disabled={isTimeUp} className={`w-full py-4 rounded-2xl font-bold text-lg shadow-lg flex justify-between px-6 ${isTimeUp ? 'bg-gray-400 cursor-not-allowed' : 'bg-gradient-to-r from-orange-600 to-orange-500 hover:shadow-orange-500/50 text-white'}`}><span>{isTimeUp ? '已截止' : '加入購物車'}</span><span>${currentItemTotalPrice}</span></button></div> </div> </div> )}
-      
-      {/* Manual Modal */}
-      {isManualOpen && ( <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center bg-black/40 backdrop-blur-sm p-0 md:p-4" onClick={() => setIsManualOpen(false)}> <div className="bg-white w-full max-w-md rounded-t-3xl md:rounded-3xl p-6 pb-8 md:p-6 space-y-4 shadow-2xl animate-in slide-in-from-bottom-10 md:zoom-in-95 max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}> <div className="flex justify-between items-center border-b border-gray-100 pb-4 shrink-0"> <div><h3 className="text-2xl font-bold text-gray-900 flex items-center gap-2"><PenSquare size={24}/> 手動輸入</h3><p className="text-gray-400 text-sm mt-1">輸入菜單上找不到的商品</p></div> <button onClick={() => setIsManualOpen(false)} className="p-2 bg-gray-50 rounded-full hover:bg-gray-100"><X size={20}/></button> </div> <div className="space-y-5 overflow-y-auto custom-scrollbar px-1 flex-1 py-2"> <div className="space-y-2"><label className="text-xs font-bold text-gray-400 uppercase tracking-wider">品項 *</label><input autoFocus type="text" value={manualName} onChange={e => setManualName(e.target.value)} placeholder="商品名稱" className="w-full p-4 bg-gray-50 border border-gray-100 rounded-xl focus:ring-2 focus:ring-orange-200 outline-none text-lg font-bold" /></div> <div className="space-y-2"><label className="text-xs font-bold text-gray-400 uppercase tracking-wider">單價 *</label><input type="number" value={manualPrice} onChange={e => setManualPrice(e.target.value)} placeholder="0" className="w-full p-4 bg-gray-50 border border-gray-100 rounded-xl text-lg font-bold" /></div> <div className="space-y-2"><label className="text-xs font-bold text-gray-400 uppercase tracking-wider">備註</label><input type="text" value={manualNote} onChange={e => setManualNote(e.target.value)} placeholder="備註..." className="w-full p-4 bg-gray-50 border border-gray-100 rounded-xl" /></div> <div className="space-y-2"><label className="text-xs font-bold text-gray-400 uppercase tracking-wider">數量</label><div className="flex items-center gap-4 bg-gray-50 p-2 rounded-xl border border-gray-100 w-fit"><button onClick={() => setManualCount(c => Math.max(1, c - 1))} className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border"><Minus size={20}/></button><span className="text-xl font-bold w-8 text-center">{manualCount}</span><button onClick={() => setManualCount(c => c + 1)} className="w-10 h-10 bg-white rounded-lg flex items-center justify-center border"><Plus size={20}/></button></div></div> </div> <div className="pt-2 shrink-0"><button onClick={confirmAddManualItem} className="w-full bg-black text-white py-4 rounded-2xl font-bold text-lg shadow-xl hover:scale-[1.01]">加入 - ${(Number(manualPrice) || 0) * manualCount}</button></div> </div> </div> )}
-      
-      {/* Cart Modal (Mobile) */}
-      {isCartOpen && ( <div className="lg:hidden fixed inset-0 z-50 flex items-end justify-center bg-black/40 backdrop-blur-sm" onClick={() => setIsCartOpen(false)}> <div className="bg-[#F8F9FA] w-full max-w-md h-[85vh] rounded-t-3xl shadow-2xl flex flex-col overflow-hidden animate-in slide-in-from-bottom-10" onClick={e => e.stopPropagation()}> <div className="bg-white px-6 py-5 border-b border-gray-100 flex justify-between items-center shrink-0"> <div><h3 className="text-xl font-bold text-gray-900 flex items-center gap-2"><ShoppingBag className="text-orange-500"/> 購物車</h3></div> <button onClick={() => setIsCartOpen(false)} className="p-2 bg-gray-50 rounded-full hover:bg-gray-100"><X size={20}/></button> </div> <CartContent /> </div> </div> )}
-      
-      {/* Room QR Modal */}
-      {isQrOpen && ( <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4" onClick={() => setIsQrOpen(false)}> <div className="bg-white p-6 rounded-3xl shadow-2xl animate-in zoom-in-95 flex flex-col items-center relative max-w-sm w-full" onClick={e => e.stopPropagation()}> <button onClick={() => setIsQrOpen(false)} className="absolute top-4 right-4 p-2 bg-gray-50 rounded-full hover:bg-gray-100"><X size={20}/></button> <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2"><QrCode size={24} className="text-orange-500"/> 房間 QR Code</h3> <div className="p-4 bg-white rounded-2xl border-2 border-orange-100 shadow-sm"> <QRCode value={window.location.href} size={200} /> </div> <p className="text-xs font-bold text-orange-600 mt-4 bg-orange-50 px-3 py-1 rounded-full">掃描加入點餐</p> </div> </div> )}
-      
-      {/* 收款碼 Modal */}
+      {/* ★★★ 美化後的 QR Code 邀請卡 ★★★ */}
+      {isQrOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/40 backdrop-blur-md p-4 animate-in fade-in duration-300" onClick={() => setIsQrOpen(false)}>
+           {/* 卡片本體：加入極淡的漸層背景提升質感 */}
+           <div className="bg-gradient-to-b from-white to-orange-50/30 w-full max-w-sm p-8 rounded-[2.5rem] shadow-2xl shadow-orange-100/20 relative flex flex-col items-center animate-in zoom-in-95 slide-in-from-bottom-6 duration-500 border border-white/60" onClick={e => e.stopPropagation()}>
+              
+              {/* 關閉按鈕 */}
+              <button onClick={() => setIsQrOpen(false)} className="absolute top-5 right-5 p-2 bg-black/5 rounded-full hover:bg-black/10 text-gray-400 hover:text-gray-700 transition-colors">
+                <X size={18}/>
+              </button>
+
+              {/* 標題區塊：移除動畫，改用更穩重的配色 */}
+              <div className="text-center mb-8 space-y-2 mt-2">
+                 <div className="inline-flex items-center justify-center gap-2 bg-orange-100/80 px-4 py-1.5 rounded-full text-orange-700 font-bold text-sm mb-2">
+                    <ScanLine size={16} className="text-orange-500"/>
+                    邀請夥伴加入
+                 </div>
+                 <h3 className="text-3xl font-black text-gray-900 tracking-tight">
+                   掃描點餐
+                 </h3>
+                 <p className="text-gray-500 text-sm">Scan to join the order room</p>
+              </div>
+
+              {/* QR Code 主體 */}
+              <div className="relative flex items-center justify-center p-5 bg-white rounded-[2rem] shadow-[0_12px_30px_-10px_rgba(0,0,0,0.08)] border border-gray-100 mb-8">
+                 <QRCode 
+                    value={window.location.href} 
+                    size={180} 
+                    bgColor="#ffffff"
+                    // ★ 修改重點：改用深灰色，比較不突兀且專業
+                    fgColor="#374151" /* Tailwind gray-700 */
+                    level="H" 
+                 />
+                 
+                 {/* 中心懸浮圖標：保留橘色作為亮點 */}
+                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                    <div className="bg-orange-500 p-3 rounded-full shadow-lg border-4 border-white">
+                      <Utensils size={24} className="text-white" />
+                    </div>
+                 </div>
+              </div>
+
+              {/* 底部房間代碼：改用輕盈的虛線框設計 */}
+              <div className="w-full py-4 rounded-2xl border-2 border-dashed border-orange-300/50 text-center bg-orange-50/50 backdrop-blur-sm relative overflow-hidden group">
+                 <div className="absolute top-0 left-0 w-full h-full bg-white/40 opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+                 
+                 <p className="text-xs text-orange-600/80 font-bold uppercase tracking-widest mb-1 relative z-10">Room Code</p>
+                 <div className="text-4xl font-black text-gray-800 font-mono tracking-[0.2em] ml-[0.2em] relative z-10 drop-shadow-sm">
+                    {roomInfo?.joinCode}
+                 </div>
+              </div>
+              
+           </div>
+        </div>
+      )}
+
       {isPayModalOpen && paymentQrImage && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setIsPayModalOpen(false)}>
-          <div className="bg-white p-6 rounded-3xl shadow-2xl animate-in zoom-in-95 flex flex-col items-center relative max-w-sm w-full" onClick={e => e.stopPropagation()}>
+          <div className="bg-white p-6 rounded-3xl shadow-2xl flex flex-col items-center relative max-w-sm w-full" onClick={e => e.stopPropagation()}>
             <button onClick={() => setIsPayModalOpen(false)} className="absolute top-4 right-4 p-2 bg-gray-50 rounded-full hover:bg-gray-100"><X size={20}/></button>
-            <h3 className="text-xl font-bold text-gray-900 mb-4 flex items-center gap-2">
-                <span className="bg-green-100 text-green-600 p-2 rounded-full"><QrCode size={24} /></span>
-                掃碼付款
-            </h3>
-            <div className="p-4 bg-white rounded-2xl border-2 border-dashed border-gray-200 w-full flex justify-center">
-               <img src={paymentQrImage} alt="Payment QR" className="max-w-full max-h-[400px] object-contain rounded-lg" />
-            </div>
-            <p className="text-sm text-gray-500 mt-4 text-center">
-                請使用支付 App (街口/銀行/TWQR) 掃描上方條碼。<br/>
-                轉帳後記得通知主揪喔！
-            </p>
+            <h3 className="text-xl font-bold text-gray-900 mb-4">掃碼付款</h3>
+            <img src={paymentQrImage} alt="Payment QR" className="max-w-full max-h-[400px] object-contain rounded-lg" />
           </div>
         </div>
       )}
+
+      {/* ★★★ 新增：帳單明細 Modal (發票風格) ★★★ */}
+      {isBillModalOpen && myBillData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/80 backdrop-blur-sm p-4 animate-in fade-in duration-200" onClick={() => setIsBillModalOpen(false)}>
+          
+          {/* 收據容器 */}
+          {/* 修改點 1: 加入 max-h-[85vh] flex flex-col 確保上下留白且內部可滾動 */}
+          <div className="bg-white w-full max-w-sm shadow-2xl overflow-hidden relative animate-in zoom-in-95 slide-in-from-bottom-4 duration-300 max-h-[85vh] flex flex-col" 
+               style={{ clipPath: "polygon(0 0, 100% 0, 100% 100%, 95% 98%, 90% 100%, 85% 98%, 80% 100%, 75% 98%, 70% 100%, 65% 98%, 60% 100%, 55% 98%, 50% 100%, 45% 98%, 40% 100%, 35% 98%, 30% 100%, 25% 98%, 20% 100%, 15% 98%, 10% 100%, 5% 98%, 0 100%)", borderRadius: "1.5rem 1.5rem 0 0" }}
+               onClick={e => e.stopPropagation()}
+          >
+            
+            {/* Header: 固定在上方 */}
+            <div className="pt-8 pb-6 px-6 text-center bg-orange-50/50 shrink-0">
+               <div className="w-14 h-14 bg-white border border-orange-100 rounded-full flex items-center justify-center mx-auto mb-3 shadow-sm text-orange-500">
+                 <ShoppingBag size={24} />
+               </div>
+               <h3 className="text-2xl font-black text-gray-900 tracking-tight">消費明細</h3>
+               <div className="flex justify-center items-center gap-2 text-xs text-gray-400 font-mono mt-2 uppercase tracking-widest">
+                  <span>{new Date().toLocaleDateString()}</span>
+                  <span>•</span>
+                  <span>{userName}</span>
+               </div>
+            </div>
+
+            {/* 分隔線 */}
+            <div className="relative h-4 bg-white shrink-0">
+                <div className="absolute left-0 top-1/2 -translate-y-1/2 w-full border-b-2 border-dashed border-gray-200"></div>
+                <div className="absolute -left-3 top-1/2 -translate-y-1/2 w-6 h-6 bg-zinc-900 rounded-full"></div>
+                <div className="absolute -right-3 top-1/2 -translate-y-1/2 w-6 h-6 bg-zinc-900 rounded-full"></div>
+            </div>
+
+            {/* Items List: 滾動區域 */}
+            {/* 修改點 2: 改用 flex-1 overflow-y-auto min-h-0 讓它自動伸縮 */}
+            <div className="px-8 py-4 space-y-4 flex-1 overflow-y-auto min-h-0 custom-scrollbar bg-white">
+               {myBillData.myItems.map((item: any, idx: number) => (
+                 <div key={idx} className="flex flex-col gap-1">
+                    <div className="flex justify-between items-baseline text-gray-800">
+                      <span className="font-bold text-base">{item.n.split(' (')[0]}</span>
+                      <span className="flex-1 mx-2 border-b border-dotted border-gray-300 relative -top-1"></span>
+                      <span className="font-mono font-bold text-lg">${item.p}</span>
+                    </div>
+                    <div className="text-xs text-gray-400 pl-1">
+                       {item.n.match(/\((.*?)\)/)?.[1] || item.optionName || '單品'}
+                    </div>
+                 </div>
+               ))}
+               
+               {myBillData.myTotalFee > 0 && (
+                 <div className="bg-orange-50 p-3 rounded-lg border border-orange-100 flex justify-between items-center text-sm text-orange-800 mt-2">
+                    <span className="font-bold flex items-center gap-2"><Wallet size={14}/> 運費分攤</span>
+                    <span className="font-mono font-bold text-lg">+${myBillData.myTotalFee}</span>
+                 </div>
+               )}
+            </div>
+
+            {/* Total Section: 固定在下方 */}
+            <div className="bg-gray-900 p-8 pb-10 text-white relative overflow-hidden shrink-0">
+               <div className="absolute top-0 right-0 w-32 h-32 bg-gray-800 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2"></div>
+               
+               <div className="relative z-10">
+                   <div className="flex justify-between items-end mb-6">
+                      <span className="text-gray-400 font-medium text-sm uppercase tracking-widest">Total Amount</span>
+                      <span className="text-5xl font-black tracking-tighter font-mono">${myBillData.finalTotal}</span>
+                   </div>
+                   
+                   <div className="h-12 w-full opacity-30 flex justify-between items-end mb-6 select-none grayscale" style={{ backgroundImage: 'linear-gradient(90deg, transparent 0%, transparent 5%, white 5%, white 10%, transparent 10%, transparent 15%, white 15%, white 30%, transparent 30%, transparent 35%, white 35%, white 40%, transparent 40%, transparent 55%, white 55%, white 60%, transparent 60%, transparent 65%, white 65%, white 70%, transparent 70%, transparent 80%, white 80%, white 85%, transparent 85%, transparent 90%, white 90%, white 100%)' }}></div>
+
+                   <button onClick={() => setIsBillModalOpen(false)} className="w-full bg-white text-black py-4 rounded-xl font-black text-lg hover:bg-gray-200 transition-colors shadow-lg active:scale-[0.98]">
+                      關閉收據
+                   </button>
+               </div>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+
     </div>
   );
 }
