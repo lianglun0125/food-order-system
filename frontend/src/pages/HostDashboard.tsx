@@ -1,9 +1,9 @@
-import { useEffect, useState, useCallback} from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, RefreshCw, Trash2, Lock, FileSpreadsheet, 
   AlertCircle, User, Clock, Edit3, Save, XCircle, CheckCircle2, CircleDollarSign, Calculator,
-  Timer, Plus
+  Timer, Plus, CalendarClock
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -43,10 +43,17 @@ export default function HostDashboard() {
   const [loading, setLoading] = useState(true);
   const [isEditing, setIsEditing] = useState(false);
   const [editedMenu, setEditedMenu] = useState<any>(null);
+  
+  // Modal States
   const [isLockModalOpen, setIsLockModalOpen] = useState(false);
+  const [isTimeModalOpen, setIsTimeModalOpen] = useState(false); // ★ 新增：時間設定 Modal
+  
   const [extraFeeInput, setExtraFeeInput] = useState<string>('');
   const [timeLeft, setTimeLeft] = useState<string>('');
   
+  // Time Setting State
+  const [customTimeInput, setCustomTimeInput] = useState(''); // 格式 "HH:mm"
+
   const isHost = localStorage.getItem(`isHost-${id}`) === 'true';
 
   const aggregateItems = (items: any[]): AggregatedItem[] => {
@@ -68,7 +75,6 @@ export default function HostDashboard() {
   const rawAvg = payerCount > 0 ? extraFeeTotal / payerCount : 0;
   const feePerPerson = Math.ceil(rawAvg / 5) * 5;
 
-  // --- 1. 使用 useCallback 包裝 API 請求 ---
   const fetchData = useCallback(async () => {
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
@@ -91,11 +97,9 @@ export default function HostDashboard() {
     }
   }, [id]);
 
-  // --- 2. 替換掉原本的 useEffect + setInterval，改用 useSmartPolling ---
-  // 5秒輪詢一次，背景自動暫停
   useSmartPolling(fetchData, 5000, true);
 
-  // --- 3. 倒數計時顯示 (UI 用，這裡還是用 setInterval 比較滑順) ---
+  // 倒數計時邏輯
   useEffect(() => {
     if (!roomInfo?.deadline || roomInfo.status === 'LOCKED') {
       setTimeLeft('');
@@ -115,18 +119,44 @@ export default function HostDashboard() {
     return () => clearInterval(timer);
   }, [roomInfo?.deadline, roomInfo?.status]);
 
-  const handleExtend = async () => {
-    if (!roomInfo?.deadline) return;
+  // ★★★ 新增：設定/修改截止時間 ★★★
+  const handleUpdateDeadline = async (newTimestamp: number) => {
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
-      const newDeadline = roomInfo.deadline + 300000;
       await fetch(`${apiUrl}/api/groups/${roomInfo.id}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deadline: newDeadline })
+        body: JSON.stringify({ deadline: newTimestamp })
       });
+      setIsTimeModalOpen(false);
       fetchData(); // 立即更新
-    } catch (e) { alert('延長失敗'); }
+    } catch (e) { alert('時間設定失敗'); }
+  };
+
+  const setDeadlineByMinutes = (minutes: number) => {
+    const now = Date.now();
+    // 如果原本就有截止時間且還沒過期，就在原本的時間基礎上增加
+    // 如果沒有，就從現在開始算
+    const baseTime = (roomInfo?.deadline && roomInfo.deadline > now) ? roomInfo.deadline : now;
+    handleUpdateDeadline(baseTime + minutes * 60 * 1000);
+  };
+
+  const setDeadlineByTime = () => {
+    if (!customTimeInput) return;
+    const [h, m] = customTimeInput.split(':').map(Number);
+    const now = new Date();
+    const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0);
+    
+    // 如果選的時間比現在早 (例如現在下午3點，選早上10點)，通常代表是「明天」，但這裡我們先假設是「設定錯誤」或「即將截止」
+    // 簡單起見，直接設為當天的該時間。如果已經過了，就會立刻變「已截止」，這符合邏輯。
+    
+    handleUpdateDeadline(target.getTime());
+  };
+
+  // 舊的快速延長按鈕 (Header上的)
+  const handleExtendQuick = async () => {
+    if (!roomInfo?.deadline) return;
+    setDeadlineByMinutes(5);
   };
 
   const handleTogglePayment = async (orderId: number, currentStatus: number) => {
@@ -222,7 +252,6 @@ export default function HostDashboard() {
   const paidCount = orders.filter(o => o.is_paid).length;
   const pendingUsers = activeParticipants.filter(p => !orders.some(o => o.user_name.toLowerCase() === p.user_name.toLowerCase()));
 
-  // 判斷顯示狀態
   let statusText = '開放中';
   let statusColor = 'text-green-500';
   if (roomInfo?.status === 'LOCKED') {
@@ -252,16 +281,26 @@ export default function HostDashboard() {
               </div>
             </div>
             
-            {/* 倒數計時與延長按鈕 */}
-            {isHost && roomInfo?.status !== 'LOCKED' && roomInfo?.deadline && (
+            {/* 倒數計時顯示區 */}
+            {isHost && roomInfo?.status !== 'LOCKED' && (
               <div className="flex items-center gap-2 bg-black/5 p-2 rounded-xl">
-                <div className="text-gray-900 font-black text-lg font-mono flex items-center gap-2 px-2">
-                  <Timer size={18} className="text-orange-500"/>
-                  {timeLeft}
-                </div>
-                <button onClick={handleExtend} className="bg-white text-xs font-bold text-orange-600 px-2 py-1 rounded-lg border border-gray-200 shadow-sm hover:bg-orange-50 flex items-center gap-1">
-                  <Plus size={12}/> 5分
-                </button>
+                 {/* 如果有時間，顯示倒數；如果沒時間，顯示「無期限」 */}
+                 {roomInfo?.deadline ? (
+                    <>
+                      <div className="text-gray-900 font-black text-lg font-mono flex items-center gap-2 px-2">
+                        <Timer size={18} className="text-orange-500"/>
+                        {timeLeft}
+                      </div>
+                      {/* 快速 +5 分鐘按鈕 */}
+                      <button onClick={handleExtendQuick} className="bg-white text-xs font-bold text-orange-600 px-2 py-1 rounded-lg border border-gray-200 shadow-sm hover:bg-orange-50 flex items-center gap-1" title="快速延長5分鐘">
+                        <Plus size={12}/> 5分
+                      </button>
+                    </>
+                 ) : (
+                    <div className="text-gray-400 text-xs font-bold px-2 flex items-center gap-1">
+                       <Clock size={14}/> 不限時
+                    </div>
+                 )}
               </div>
             )}
 
@@ -272,6 +311,15 @@ export default function HostDashboard() {
 
           {isHost ? (
             <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
+              {/* ★★★ 修改處：新增時間設定按鈕 ★★★ */}
+              <button 
+                onClick={() => { setCustomTimeInput(''); setIsTimeModalOpen(true); }}
+                disabled={roomInfo?.status === 'LOCKED'}
+                className="flex items-center gap-2 bg-blue-100 text-blue-700 px-4 py-2 rounded-xl text-sm font-bold whitespace-nowrap hover:bg-blue-200 disabled:opacity-50"
+              >
+                <CalendarClock size={16} /> {roomInfo?.deadline ? '修改時間' : '設定結單'}
+              </button>
+
               <button 
                 onClick={openLockModal} 
                 disabled={roomInfo?.status === 'LOCKED'} 
@@ -290,7 +338,7 @@ export default function HostDashboard() {
       </div>
 
       <div className="max-w-7xl mx-auto p-4 space-y-6">
-        {/* Stats */}
+        {/* Stats 區塊 (保持不變) */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="bg-gradient-to-br from-gray-900 to-gray-800 text-white p-6 rounded-3xl shadow-xl flex flex-col justify-between">
               <div>
@@ -362,7 +410,7 @@ export default function HostDashboard() {
           </div>
         )}
 
-        {/* 訂單列表 */}
+        {/* 訂單列表 (維持原樣) */}
         <div className="space-y-4">
           <h2 className="font-bold text-gray-500 text-sm uppercase tracking-wider">訂單明細</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -397,7 +445,6 @@ export default function HostDashboard() {
                     </div>
                   )}
                 </div>
-                {/* ★★★ 修改處：把刪除按鈕移到這裡，和「總計」放在同一列 ★★★ */}
                 <div className="mt-3 pt-2 border-t border-gray-100 flex justify-between items-center">
                    <div className="flex items-center gap-2">
                      {isHost && (
@@ -416,6 +463,7 @@ export default function HostDashboard() {
         </div>
       </div>
 
+      {/* Lock Modal (保持不變) */}
       {isLockModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
           <div className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl animate-in zoom-in-95">
@@ -430,6 +478,51 @@ export default function HostDashboard() {
               <button onClick={() => setIsLockModalOpen(false)} className="flex-1 py-3 bg-gray-100 text-gray-600 rounded-xl font-bold hover:bg-gray-200">取消</button>
               <button onClick={confirmLock} className="flex-1 py-3 bg-black text-white rounded-xl font-bold hover:opacity-80">確認結單</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ★★★ 新增：時間設定 Modal ★★★ */}
+      {isTimeModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
+          <div className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl animate-in zoom-in-95">
+            <h3 className="text-xl font-bold text-gray-900 mb-2 flex items-center gap-2">
+              <CalendarClock size={24} className="text-blue-500"/> 設定自動結單
+            </h3>
+            <p className="text-gray-500 text-sm mb-4">系統會在時間到時自動顯示「已截止」並停止收單。</p>
+
+            <div className="space-y-4">
+               {/* 快速按鈕區 */}
+               <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => setDeadlineByMinutes(15)} className="py-2.5 bg-blue-50 text-blue-600 rounded-xl text-sm font-bold hover:bg-blue-100 transition-colors">+15 分鐘</button>
+                  <button onClick={() => setDeadlineByMinutes(30)} className="py-2.5 bg-blue-50 text-blue-600 rounded-xl text-sm font-bold hover:bg-blue-100 transition-colors">+30 分鐘</button>
+               </div>
+
+               {/* 指定時間區 */}
+               <div className="bg-gray-50 p-3 rounded-xl border border-gray-200">
+                  <label className="text-xs font-bold text-gray-400 uppercase block mb-1">或指定今日時間</label>
+                  <div className="flex gap-2">
+                     <input 
+                       type="time" 
+                       value={customTimeInput} 
+                       onChange={e => setCustomTimeInput(e.target.value)}
+                       className="flex-1 bg-white p-2 rounded-lg font-bold text-lg border border-gray-300 outline-none focus:border-blue-500"
+                     />
+                     <button onClick={setDeadlineByTime} disabled={!customTimeInput} className="bg-black text-white px-4 rounded-lg font-bold text-sm disabled:opacity-50">確認</button>
+                  </div>
+               </div>
+
+               {/* 取消期限 (只有當原本有設期限時才顯示) */}
+               {roomInfo?.deadline && (
+                 <button onClick={() => handleUpdateDeadline(0)} className="w-full py-2 text-red-500 text-sm font-bold hover:bg-red-50 rounded-xl transition-colors">
+                    移除時間限制 (變更為不限時)
+                 </button>
+               )}
+            </div>
+
+            <button onClick={() => setIsTimeModalOpen(false)} className="w-full mt-4 py-3 bg-gray-100 text-gray-600 rounded-xl font-bold hover:bg-gray-200">
+               取消
+            </button>
           </div>
         </div>
       )}
