@@ -80,6 +80,12 @@ export default function HostDashboard() {
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
       const roomRes = await fetch(`${apiUrl}/api/groups/${id}`);
+
+      if (roomRes.status === 404) {
+        navigate('/404', { replace: true });
+        return;
+      }
+
       if (!roomRes.ok) throw new Error('房間不存在');
       const roomData = await roomRes.json();
       setRoomInfo(roomData);

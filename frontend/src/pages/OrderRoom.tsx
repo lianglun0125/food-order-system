@@ -97,7 +97,14 @@ export default function OrderRoom() {
       
       // A. 抓房間資訊
       const roomRes = await fetch(`${apiUrl}/api/groups/${id}`);
-      if (!roomRes.ok) throw new Error('無法讀取房間資料');
+      if (!roomRes.ok) {
+        if (roomRes.status === 404) {
+          // 如果後端回傳 404，代表房間代碼無效或已刪除
+          navigate('/404', { replace: true }); 
+          return;
+        }
+        throw new Error('無法讀取房間資料');
+      }
       
       const roomData = await roomRes.json();
       setRoomInfo(roomData);
