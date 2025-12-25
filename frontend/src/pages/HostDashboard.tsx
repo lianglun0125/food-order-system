@@ -41,18 +41,18 @@ export default function HostDashboard() {
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [roomInfo, setRoomInfo] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false); // ★ 新增：專門控制旋轉鈕動畫
   const [isEditing, setIsEditing] = useState(false);
   const [editedMenu, setEditedMenu] = useState<any>(null);
   
   // Modal States
   const [isLockModalOpen, setIsLockModalOpen] = useState(false);
-  const [isTimeModalOpen, setIsTimeModalOpen] = useState(false); // ★ 新增：時間設定 Modal
+  const [isTimeModalOpen, setIsTimeModalOpen] = useState(false);
   
   const [extraFeeInput, setExtraFeeInput] = useState<string>('');
   const [timeLeft, setTimeLeft] = useState<string>('');
   
-  // Time Setting State
-  const [customTimeInput, setCustomTimeInput] = useState(''); // 格式 "HH:mm"
+  const [customTimeInput, setCustomTimeInput] = useState('');
 
   const isHost = localStorage.getItem(`isHost-${id}`) === 'true';
 
@@ -75,7 +75,8 @@ export default function HostDashboard() {
   const rawAvg = payerCount > 0 ? extraFeeTotal / payerCount : 0;
   const feePerPerson = Math.ceil(rawAvg / 5) * 5;
 
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (isManual: boolean = false) => {
+    if (isManual) setIsRefreshing(true); // 手動點擊時開啟動畫
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
       const roomRes = await fetch(`${apiUrl}/api/groups/${id}`);
@@ -93,11 +94,12 @@ export default function HostDashboard() {
     } catch (e) { 
       console.error(e); 
     } finally { 
-      setLoading(false); 
+      setLoading(false);
+      if (isManual) setTimeout(() => setIsRefreshing(false), 500); // 讓動畫轉完至少半秒
     }
   }, [id]);
 
-  useSmartPolling(fetchData, 5000, true);
+  useSmartPolling(() => fetchData(false), 5000, true);
 
   // 倒數計時邏輯
   useEffect(() => {
@@ -119,8 +121,7 @@ export default function HostDashboard() {
     return () => clearInterval(timer);
   }, [roomInfo?.deadline, roomInfo?.status]);
 
-  // ★★★ 新增：設定/修改截止時間 ★★★
-  const handleUpdateDeadline = async (newTimestamp: number) => {
+  const handleUpdateDeadline = async (newTimestamp: number | null) => {
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
       await fetch(`${apiUrl}/api/groups/${roomInfo.id}/status`, {
@@ -129,14 +130,12 @@ export default function HostDashboard() {
         body: JSON.stringify({ deadline: newTimestamp })
       });
       setIsTimeModalOpen(false);
-      fetchData(); // 立即更新
+      fetchData(true);
     } catch (e) { alert('時間設定失敗'); }
   };
 
   const setDeadlineByMinutes = (minutes: number) => {
     const now = Date.now();
-    // 如果原本就有截止時間且還沒過期，就在原本的時間基礎上增加
-    // 如果沒有，就從現在開始算
     const baseTime = (roomInfo?.deadline && roomInfo.deadline > now) ? roomInfo.deadline : now;
     handleUpdateDeadline(baseTime + minutes * 60 * 1000);
   };
@@ -146,14 +145,9 @@ export default function HostDashboard() {
     const [h, m] = customTimeInput.split(':').map(Number);
     const now = new Date();
     const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), h, m, 0);
-    
-    // 如果選的時間比現在早 (例如現在下午3點，選早上10點)，通常代表是「明天」，但這裡我們先假設是「設定錯誤」或「即將截止」
-    // 簡單起見，直接設為當天的該時間。如果已經過了，就會立刻變「已截止」，這符合邏輯。
-    
     handleUpdateDeadline(target.getTime());
   };
 
-  // 舊的快速延長按鈕 (Header上的)
   const handleExtendQuick = async () => {
     if (!roomInfo?.deadline) return;
     setDeadlineByMinutes(5);
@@ -169,7 +163,7 @@ export default function HostDashboard() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isPaid: newStatus === 1 })
       });
-    } catch (e) { alert('狀態更新失敗'); fetchData(); }
+    } catch (e) { alert('狀態更新失敗'); fetchData(true); }
   };
 
   const handleDeleteOrder = async (orderId: number, userName: string) => {
@@ -177,7 +171,7 @@ export default function HostDashboard() {
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
       await fetch(`${apiUrl}/api/orders/${orderId}`, { method: 'DELETE' });
-      fetchData(); 
+      fetchData(true); 
     } catch (e) { alert('刪除失敗'); }
   };
 
@@ -195,7 +189,7 @@ export default function HostDashboard() {
         body: JSON.stringify({ status: 'LOCKED', extraFee: fee })
       });
       setIsLockModalOpen(false);
-      fetchData();
+      fetchData(true);
     } catch (e) { alert('操作失敗'); }
   };
 
@@ -262,6 +256,17 @@ export default function HostDashboard() {
     statusColor = 'text-orange-500 font-black animate-pulse';
   }
 
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <RefreshCw size={40} className="text-orange-500 animate-spin" />
+          <p className="text-gray-500 font-bold">正在讀取儀表板...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       
@@ -284,14 +289,12 @@ export default function HostDashboard() {
             {/* 倒數計時顯示區 */}
             {isHost && roomInfo?.status !== 'LOCKED' && (
               <div className="flex items-center gap-2 bg-black/5 p-2 rounded-xl">
-                 {/* 如果有時間，顯示倒數；如果沒時間，顯示「無期限」 */}
                  {roomInfo?.deadline ? (
                     <>
                       <div className="text-gray-900 font-black text-lg font-mono flex items-center gap-2 px-2">
                         <Timer size={18} className="text-orange-500"/>
                         {timeLeft}
                       </div>
-                      {/* 快速 +5 分鐘按鈕 */}
                       <button onClick={handleExtendQuick} className="bg-white text-xs font-bold text-orange-600 px-2 py-1 rounded-lg border border-gray-200 shadow-sm hover:bg-orange-50 flex items-center gap-1" title="快速延長5分鐘">
                         <Plus size={12}/> 5分
                       </button>
@@ -304,14 +307,17 @@ export default function HostDashboard() {
               </div>
             )}
 
-            <button onClick={fetchData} className="p-2 text-orange-600 hover:bg-orange-50 rounded-full">
-              <RefreshCw size={20} className={loading ? 'animate-spin' : ''} />
+            {/* ★★★ 修復：旋轉鈕綁定 fetchData(true) ★★★ */}
+            <button 
+              onClick={() => fetchData(true)} 
+              className="p-2 text-orange-600 hover:bg-orange-50 rounded-full transition-transform active:scale-90"
+            >
+              <RefreshCw size={20} className={isRefreshing ? 'animate-spin' : ''} />
             </button>
           </div>
 
           {isHost ? (
             <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
-              {/* ★★★ 修改處：新增時間設定按鈕 ★★★ */}
               <button 
                 onClick={() => { setCustomTimeInput(''); setIsTimeModalOpen(true); }}
                 disabled={roomInfo?.status === 'LOCKED'}
@@ -338,7 +344,7 @@ export default function HostDashboard() {
       </div>
 
       <div className="max-w-7xl mx-auto p-4 space-y-6">
-        {/* Stats 區塊 (保持不變) */}
+        {/* Stats 區塊 */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="bg-gradient-to-br from-gray-900 to-gray-800 text-white p-6 rounded-3xl shadow-xl flex flex-col justify-between">
               <div>
@@ -371,7 +377,7 @@ export default function HostDashboard() {
             )}
         </div>
 
-        {/* 菜單編輯區 (維持原樣) */}
+        {/* 菜單編輯區 */}
         {isHost && roomInfo?.menu && (
           <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 relative overflow-hidden">
              <div className="flex justify-between items-center mb-4">
@@ -410,7 +416,7 @@ export default function HostDashboard() {
           </div>
         )}
 
-        {/* 訂單列表 (維持原樣) */}
+        {/* 訂單列表 */}
         <div className="space-y-4">
           <h2 className="font-bold text-gray-500 text-sm uppercase tracking-wider">訂單明細</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -463,7 +469,6 @@ export default function HostDashboard() {
         </div>
       </div>
 
-      {/* Lock Modal (保持不變) */}
       {isLockModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
           <div className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl animate-in zoom-in-95">
@@ -482,7 +487,7 @@ export default function HostDashboard() {
         </div>
       )}
 
-      {/* ★★★ 新增：時間設定 Modal ★★★ */}
+      {/* 時間設定 Modal */}
       {isTimeModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
           <div className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl animate-in zoom-in-95">
@@ -492,13 +497,11 @@ export default function HostDashboard() {
             <p className="text-gray-500 text-sm mb-4">系統會在時間到時自動顯示「已截止」並停止收單。</p>
 
             <div className="space-y-4">
-               {/* 快速按鈕區 */}
                <div className="grid grid-cols-2 gap-2">
                   <button onClick={() => setDeadlineByMinutes(15)} className="py-2.5 bg-blue-50 text-blue-600 rounded-xl text-sm font-bold hover:bg-blue-100 transition-colors">+15 分鐘</button>
                   <button onClick={() => setDeadlineByMinutes(30)} className="py-2.5 bg-blue-50 text-blue-600 rounded-xl text-sm font-bold hover:bg-blue-100 transition-colors">+30 分鐘</button>
                </div>
 
-               {/* 指定時間區 */}
                <div className="bg-gray-50 p-3 rounded-xl border border-gray-200">
                   <label className="text-xs font-bold text-gray-400 uppercase block mb-1">或指定今日時間</label>
                   <div className="flex gap-2">
@@ -512,9 +515,12 @@ export default function HostDashboard() {
                   </div>
                </div>
 
-               {/* 取消期限 (只有當原本有設期限時才顯示) */}
+               {/* ★★★ 修復：移除時間限制將傳送 null ★★★ */}
                {roomInfo?.deadline && (
-                 <button onClick={() => handleUpdateDeadline(0)} className="w-full py-2 text-red-500 text-sm font-bold hover:bg-red-50 rounded-xl transition-colors">
+                 <button 
+                  onClick={() => handleUpdateDeadline(null)} 
+                  className="w-full py-2 text-red-500 text-sm font-bold hover:bg-red-50 rounded-xl transition-colors"
+                 >
                     移除時間限制 (變更為不限時)
                  </button>
                )}
