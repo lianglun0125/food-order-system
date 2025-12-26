@@ -62,7 +62,7 @@ export default function RocketLaunch({ status, onComplete }: Props) {
         
         {/* --- 火箭本體 --- */}
         <div className={`
-           transition-all ease-in relative z-20
+           transition-all ease-in relative z-20 flex flex-col items-center 
            ${phase === 'ignition' ? 'animate-bounce-fast' : ''}
            
            /* ★★★ 成功：光速拉伸 (Warp) ★★★ */

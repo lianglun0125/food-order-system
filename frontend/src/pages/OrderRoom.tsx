@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
   Plus, Coffee, Utensils, Search, X, QrCode, Clock, 
@@ -26,6 +26,10 @@ export default function OrderRoom() {
   const navigate = useNavigate();
   const [userName, setUserName] = useState(() => localStorage.getItem('userName') || '');
   const [userToken] = useState(() => localStorage.getItem('userToken') || crypto.randomUUID());
+  
+  useEffect(() => {
+    localStorage.setItem('userToken', userToken);
+  }, [userToken]);
   
   // 1. 資料邏輯 Hook
   const { 
