@@ -17,6 +17,9 @@ import { useRoomData } from '../hooks/useRoomData';
 import ItemDetailModal from '../components/ItemDetailModal';
 import ManualEntryModal from '../components/ManualEntryModal';
 import NameEntryModal from '../components/NameEntryModal';
+import RocketLaunch from '../components/RocketLaunch';
+import Toast, { type ToastType } from '../components/Toast';
+import ConfirmModal from '../components/ConfirmModal';   
 
 export default function OrderRoom() {
   const { id } = useParams(); 
@@ -52,6 +55,23 @@ export default function OrderRoom() {
   const isHost = localStorage.getItem(`isHost-${id}`) === 'true';
   const isTimeUp = timeLeft?.str === '已截止' || roomInfo?.status === 'LOCKED';
 
+  // 火箭發射訂單
+  const [showRocket, setShowRocket] = useState(false);
+  const [submitStatus, setSubmitStatus] = useState<'success' | 'failure'>('success');
+
+  // TOAST狀態
+  const [toast, setToast] = useState<{ msg: string; type: ToastType } | null>(null);
+  
+  const [copyConfirm, setCopyConfirm] = useState<{ isOpen: boolean; data: string | null }>({
+    isOpen: false,
+    data: null
+  });
+
+  // Helper: 顯示 Toast
+  const showToast = (msg: string, type: ToastType = 'success') => {
+    setToast({ msg, type });
+  };
+
   // 初始化 Category Tab
   useMemo(() => {
     if (categories.length > 0 && !activeCategory) setActiveCategory(categories[0].name);
@@ -68,8 +88,16 @@ export default function OrderRoom() {
   // 送出訂單邏輯
   const handleSubmitOrder = async () => {
       if (isTimeUp || cart.length === 0) return;
+      
+      // 1. 按下按鈕，馬上啟動火箭動畫 (預設為成功狀態)
       setIsSubmitting(true);
+      setSubmitStatus('success'); 
+      setShowRocket(true);
+
       try {
+          // ★★★ 想看爆炸？把下面這行取消註解，然後去點餐送出看看！ ★★★
+          // throw new Error("測試爆炸特效 💥");
+
           const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
           const payloadItems = cart.flatMap(item => {
               const baseName = item.optionName === '手動輸入' ? item.n : `${item.n} (${item.optionName})`;
@@ -88,11 +116,26 @@ export default function OrderRoom() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ groupId: roomInfo?.id, userName, items: payloadItems, userToken })
           });
-          if (!res.ok) throw new Error('送出失敗');
-          alert('訂單送出成功！');
+          
+          if (!res.ok) {
+            const data = await res.json();
+            throw new Error(data.error || '送出失敗');
+          }
+          
+          // 成功流程：
+          // 清空購物車 (火箭這時候已經在飛了)
           clearCart();
           setIsCartOpen(false);
-      } catch (e) { alert('錯誤：' + e); } finally { setIsSubmitting(false); }
+
+      } catch (e) { 
+          // 失敗流程：
+          console.error('訂單送出錯誤:', e);
+          // ★★★ 關鍵：告訴火箭「失敗了」，它就會執行爆炸動畫 ★★★
+          setSubmitStatus('failure');
+          // 這裡不用 alert，因為火箭會顯示紅色的錯誤訊息
+      } finally { 
+          setIsSubmitting(false); 
+      }
   };
 
   const handleFetchPaymentQr = async () => {
@@ -128,26 +171,37 @@ export default function OrderRoom() {
   // 處理「跟單」(+1) 功能
   const handleCopyOrder = (orderItemsJson: string) => {
     if (isTimeUp) return;
-    if (!confirm('確定要複製這張訂單的內容嗎？(會加入目前的購物車)')) return;
-    
+    // 打開確認視窗，並把這筆訂單的 JSON 先存起來
+    setCopyConfirm({ isOpen: true, data: orderItemsJson });
+  };
+
+  // 執行：使用者在 Modal 按下「確認」後執行
+  const onConfirmCopy = () => {
+    const orderItemsJson = copyConfirm.data;
+    if (!orderItemsJson) return;
+
     try {
       const items = JSON.parse(orderItemsJson);
       items.forEach((item: any) => {
-        // 將歷史訂單轉換為購物車項目格式
         addToCart({
           id: crypto.randomUUID(),
-          n: item.n, // 這裡已經包含原本的選項描述
+          n: item.n,
           price: item.p,
           count: 1,
-          optionName: '跟單', // 標記為跟單
+          optionName: '跟單',
           note: item.note || '',
           owner: userName
         });
       });
-      alert('已加入購物車！');
+      // ★★★ 用漂亮的 Toast 取代 alert ★★★
+      showToast('已成功加入購物車！ 🛒', 'success');
+      
     } catch (e) {
       console.error(e);
-      alert('複製失敗');
+      showToast('複製失敗，請重試', 'error');
+    } finally {
+      // 關閉 Modal
+      setCopyConfirm({ isOpen: false, data: null });
     }
   };
 
@@ -530,11 +584,35 @@ export default function OrderRoom() {
                    </button>
                </div>
             </div>
-
           </div>
         </div>
       )}
+      
+      {/* ★★★ 新增：跟單確認視窗 ★★★ */}
+      <ConfirmModal 
+        isOpen={copyConfirm.isOpen}
+        title="要 +1 嗎？"
+        content="這將會複製所有餐點內容加入到你目前的購物車中哦"
+        onConfirm={onConfirmCopy}
+        onCancel={() => setCopyConfirm({ ...copyConfirm, isOpen: false })}
+      />
 
+      {/* ★★★ 新增：通用 Toast 通知 ★★★ */}
+      {toast && (
+        <Toast 
+          message={toast.msg} 
+          type={toast.type} 
+          onClose={() => setToast(null)} 
+        />
+      )}
+
+      {/* ★★★ 新增：火箭發射過場 ★★★ */}
+      {showRocket && (
+        <RocketLaunch 
+            status={submitStatus}
+            onComplete={() => setShowRocket(false)} 
+        />
+      )}
 
     </div>
   );
