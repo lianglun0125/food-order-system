@@ -60,6 +60,7 @@ export default function HostOrder() {
       const res = await fetch(`${apiUrl}/api/groups`, { method: 'POST', body: formData });
       const data = await res.json();
       if (!res.ok) { setTurnstileToken(''); throw new Error(data.error || '上傳失敗'); }
+      localStorage.setItem(`hostToken-${data.joinCode}`, data.hostToken);
       localStorage.setItem(`isHost-${data.joinCode}`, 'true');
       navigate(`/room/${data.joinCode}`);
     } catch (err) { setError(err instanceof Error ? err.message : '發生未知錯誤'); } finally { setIsLoading(false); }

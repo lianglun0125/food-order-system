@@ -54,7 +54,13 @@ export default function HostDashboard() {
   
   const [customTimeInput, setCustomTimeInput] = useState('');
 
-  const isHost = localStorage.getItem(`isHost-${id}`) === 'true';
+  const hostToken = localStorage.getItem(`hostToken-${id}`);
+  const isHost = localStorage.getItem(`isHost-${id}`) === 'true' && !!hostToken;
+
+  const authHeaders = {
+    'Content-Type': 'application/json',
+    'X-Host-Token': hostToken || ''
+  }
 
   const aggregateItems = (items: any[]): AggregatedItem[] => {
     const grouped: { [key: string]: AggregatedItem } = {};
@@ -140,11 +146,12 @@ export default function HostDashboard() {
   const handleUpdateDeadline = async (newTimestamp: number | null) => {
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
-      await fetch(`${apiUrl}/api/groups/${roomInfo.id}/status`, {
+      const res = await fetch(`${apiUrl}/api/groups/${roomInfo.id}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders, // ★ 使用 authHeaders
         body: JSON.stringify({ deadline: newTimestamp })
       });
+      if (!res.ok) throw new Error('權限不足或失敗'); // 處理 401
       setIsTimeModalOpen(false);
       fetchData(true);
     } catch (e) { alert('時間設定失敗'); }
@@ -174,19 +181,20 @@ export default function HostDashboard() {
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, is_paid: newStatus } : o));
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
-      await fetch(`${apiUrl}/api/orders/${orderId}/pay`, {
+      const res = await fetch(`${apiUrl}/api/orders/${orderId}/pay`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders, // ★ 使用 authHeaders
         body: JSON.stringify({ isPaid: newStatus === 1 })
       });
-    } catch (e) { alert('狀態更新失敗'); fetchData(true); }
+      if (!res.ok) throw new Error('Update failed');
+    } catch (e) { alert('狀態更新失敗 (可能無權限)'); fetchData(true); }
   };
 
   const handleDeleteOrder = async (orderId: number, userName: string) => {
     if (!confirm(`確定要刪除 ${userName} 的訂單嗎？`)) return;
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
-      await fetch(`${apiUrl}/api/orders/${orderId}`, { method: 'DELETE' });
+      await fetch(`${apiUrl}/api/orders/${orderId}`, { method: 'DELETE', headers: { 'X-Host-Token': hostToken || '' }});
       fetchData(true); 
     } catch (e) { alert('刪除失敗'); }
   };
@@ -201,7 +209,7 @@ export default function HostDashboard() {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
       await fetch(`${apiUrl}/api/groups/${roomInfo.id}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: authHeaders,
         body: JSON.stringify({ status: 'LOCKED', extraFee: fee })
       });
       setIsLockModalOpen(false);
@@ -213,14 +221,14 @@ export default function HostDashboard() {
     if (!confirm('確定要刪除房間嗎？')) return;
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
-      await fetch(`${apiUrl}/api/groups/${roomInfo.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: 'DELETED' }), headers: { 'Content-Type': 'application/json' }});
+      await fetch(`${apiUrl}/api/groups/${roomInfo.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: 'DELETED' }), headers: authHeaders });
       localStorage.removeItem(`isHost-${id}`);
       navigate('/');
     } catch (e) { alert('操作失敗'); }
   };
   
   const startEditing = () => { if (!roomInfo?.menu) return; setEditedMenu(JSON.parse(JSON.stringify(roomInfo.menu))); setIsEditing(true); };
-  const saveMenu = async () => { try { const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, ''); await fetch(`${apiUrl}/api/groups/${roomInfo.id}/menu`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ menu: editedMenu }) }); setRoomInfo({ ...roomInfo, menu: editedMenu }); setIsEditing(false); alert('菜單更新成功！'); } catch (e) { alert('更新失敗'); } };
+  const saveMenu = async () => { try { const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, ''); await fetch(`${apiUrl}/api/groups/${roomInfo.id}/menu`, { method: 'PATCH', headers: authHeaders, body: JSON.stringify({ menu: editedMenu }) }); setRoomInfo({ ...roomInfo, menu: editedMenu }); setIsEditing(false); alert('菜單更新成功！'); } catch (e) { alert('更新失敗'); } };
 
   const handleExportExcel = () => {
       if (orders.length === 0) return alert('目前沒有訂單可以匯出');

@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS groups (
   deadline INTEGER,                  -- 截止時間戳記 (選填)
   extra_fee INTEGER DEFAULT 0,       -- 總額外費用 (如運費)
   payment_qr TEXT                    -- 收款碼圖片的 Base64 字串 (選填)
+  host_token  TEXT                   -- 主揪權限Sercurity
 );
 
 -- 2. 訂單明細表：儲存使用者的點餐內容
@@ -37,3 +38,6 @@ CREATE TABLE IF NOT EXISTS participants (
   -- 確保同一個房間內暱稱不重複，且支援 ON CONFLICT 更新
   UNIQUE(group_id, user_name)
 );
+
+CREATE INDEX IF NOT EXISTS idx_orders_group_id ON orders(group_id);
+CREATE INDEX IF NOT EXISTS idx_participants_group_id ON participants(group_id);

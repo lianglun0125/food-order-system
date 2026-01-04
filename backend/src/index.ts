@@ -23,7 +23,7 @@ app.use('/*', cors({
     return ALLOWED_ORIGINS.includes(origin) ? origin : null;
   },
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization', 'CF-Connecting-IP'], // 加上 IP header 允許
+  allowHeaders: ['Content-Type', 'Authorization', 'CF-Connecting-IP', 'X-Host-Token'], // 加上 IP header 允許
   exposeHeaders: ['Content-Length'],
   maxAge: 600,
 }))
@@ -56,14 +56,38 @@ async function verifyTurnstile(token: string, secretKey: string, ip?: string) {
   return outcome.success; // true 代表驗證通過
 }
 
+
+async function verifyHost(c: any, groupId: string) {
+  const hostToken = c.req.header('X-Host-Token');
+  if (!hostToken) return false;
+
+  const group = await c.env.DB.prepare('SELECT host_token FROM groups WHERE id = ?')
+    .bind(groupId).first();
+  
+  // 如果房間沒設 token (舊資料) 或者 token 不對，就驗證失敗
+  if (!group || group.host_token !== hostToken) {
+    return false;
+  }
+  return true;
+}
+
 // --- API 路由邏輯 ---
 
 app.patch('/api/orders/:id/pay', async (c) => {
-  const orderId = c.req.param('id')
-  const { isPaid } = await c.req.json()
+  const orderId = c.req.param('id');
+  
+  // 先查出這張單屬於哪個 group，才能驗證該 group 的 host
+  const order = await c.env.DB.prepare('SELECT group_id FROM orders WHERE id = ?').bind(orderId).first();
+  if (!order) return c.json({ error: '訂單不存在' }, 404);
+
+  // ★ 驗證 Host
+  const isHost = await verifyHost(c, order.group_id as string);
+  if (!isHost) return c.json({ error: '權限不足' }, 401);
+
+  const { isPaid } = await c.req.json();
   await c.env.DB.prepare('UPDATE orders SET is_paid = ? WHERE id = ?')
-    .bind(isPaid ? 1 : 0, orderId).run()
-  return c.json({ success: true })
+    .bind(isPaid ? 1 : 0, orderId).run();
+  return c.json({ success: true });
 })
 
 app.post('/api/groups/:code/join', async (c) => {
@@ -103,12 +127,16 @@ app.get('/api/groups/:id/participants', async (c) => {
 })
 
 app.patch('/api/groups/:id/menu', async (c) => {
-  const groupId = c.req.param('id')
-  const { menu } = await c.req.json()
-  if (!menu || !menu.categories) return c.json({ error: '菜單格式錯誤' }, 400)
+  const groupId = c.req.param('id');
+
+  const isHost = await verifyHost(c, groupId);
+  if (!isHost) return c.json({ error: '權限不足' }, 401);
+
+  const { menu } = await c.req.json();
+  if (!menu || !menu.categories) return c.json({ error: '菜單格式錯誤' }, 400);
   await c.env.DB.prepare('UPDATE groups SET menu_json = ? WHERE id = ?')
-    .bind(JSON.stringify(menu), groupId).run()
-  return c.json({ success: true })
+    .bind(JSON.stringify(menu), groupId).run();
+  return c.json({ success: true });
 })
 
 // ★★★ 核心修改：建立房間 API (包含 Rate Limit, Turnstile Verify, JoinCode Retry) ★★★
@@ -223,6 +251,7 @@ app.post('/api/groups', async (c) => {
     catch (e) { return c.json({ error: '菜單格式解析失敗' }, 500) }
 
     const groupId = crypto.randomUUID()
+    const hostToken = crypto.randomUUID();
     
     // 3. Join Code 防撞機制 (重試最多 5 次)
     let joinCode = '';
@@ -246,23 +275,38 @@ app.post('/api/groups', async (c) => {
 
     const deadline = deadlineStr && deadlineStr !== 'null' ? Number(deadlineStr) : null;
 
-    await c.env.DB.prepare(`INSERT INTO groups (id, join_code, menu_json, created_at, deadline, payment_qr) VALUES (?, ?, ?, ?, ?, ?)`)
-      .bind(groupId, joinCode, JSON.stringify(menuJson), Date.now(), deadline, paymentQrBase64).run()
+    await c.env.DB.prepare(`
+      INSERT INTO groups (id, join_code, menu_json, created_at, deadline, payment_qr, host_token) 
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).bind(groupId, joinCode, JSON.stringify(menuJson), Date.now(), deadline, paymentQrBase64, hostToken).run();
 
-    return c.json({ success: true, joinCode, groupId, menu: menuJson })
+    // ★ 修改：回傳 hostToken 給前端 (這是唯一一次前端能拿到的機會)
+    return c.json({ success: true, joinCode, groupId, menu: menuJson, hostToken });
   } catch (e) {
-    return c.json({ error: '系統錯誤', details: String(e) }, 500)
+    return c.json({ error: '系統錯誤', details: String(e) }, 500);
   }
-})
+});
 
 app.delete('/api/orders/:id', async (c) => {
-  const orderId = c.req.param('id')
-  await c.env.DB.prepare('DELETE FROM orders WHERE id = ?').bind(orderId).run()
-  return c.json({ success: true })
+  const orderId = c.req.param('id');
+  
+  const order = await c.env.DB.prepare('SELECT group_id FROM orders WHERE id = ?').bind(orderId).first();
+  if (!order) return c.json({ error: '訂單不存在' }, 404);
+
+  // ★ 驗證 Host
+  const isHost = await verifyHost(c, order.group_id as string);
+  if (!isHost) return c.json({ error: '權限不足' }, 401);
+
+  await c.env.DB.prepare('DELETE FROM orders WHERE id = ?').bind(orderId).run();
+  return c.json({ success: true });
 })
 
 app.patch('/api/groups/:id/status', async (c) => {
   const groupId = c.req.param('id')
+
+  const isHost = await verifyHost(c, groupId);
+  if (!isHost) return c.json({ error: '權限不足' }, 401);
+
   const { status, extraFee, deadline } = await c.req.json() 
   
   let query = 'UPDATE groups SET status = status';
