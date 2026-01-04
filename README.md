@@ -8,6 +8,7 @@
 [![License](https://img.shields.io/badge/license-MIT-brightgreen?style=flat-square)](LICENSE)
 
 > **AI 驅動的即時協作點餐系統** — 菜單秒辨、運費自動分攤、Excel 一鍵匯出
+> 最新版本 v1.3.0 | Latest version v1.3.0
 
 
 ## 📖 核心概念
