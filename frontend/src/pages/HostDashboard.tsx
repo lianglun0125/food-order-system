@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, RefreshCw, Trash2, Lock, FileSpreadsheet, 
@@ -31,11 +31,16 @@ type AggregatedItem = {
   note?: string;
   count: number;
   subtotal: number;
+  originalIndices: number[];
 };
 
 export default function HostDashboard() {
   const { id } = useParams();
   const navigate = useNavigate();
+  
+
+  // lock
+  const isUpdatingRef = useRef(false);
   
   const [orders, setOrders] = useState<Order[]>([]);
   const [participants, setParticipants] = useState<Participant[]>([]);
@@ -64,13 +69,14 @@ export default function HostDashboard() {
 
   const aggregateItems = (items: any[]): AggregatedItem[] => {
     const grouped: { [key: string]: AggregatedItem } = {};
-    items.forEach(item => {
+    items.forEach((item, index) => {
       const key = `${item.n}-${item.p}-${item.note || ''}`;
       if (grouped[key]) {
         grouped[key].count += 1;
         grouped[key].subtotal += item.p;
+        grouped[key].originalIndices.push(index);
       } else {
-        grouped[key] = { n: item.n, p: item.p, note: item.note, count: 1, subtotal: item.p };
+        grouped[key] = { n: item.n, p: item.p, note: item.note, count: 1, subtotal: item.p, originalIndices: [index] };
       }
     });
     return Object.values(grouped);
@@ -92,6 +98,7 @@ export default function HostDashboard() {
   };
 
   const fetchData = useCallback(async (isManual: boolean = false) => {
+    if (isUpdatingRef.current && !isManual) return;
     if (isManual) setIsRefreshing(true); // 手動點擊時開啟動畫
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
@@ -178,16 +185,31 @@ export default function HostDashboard() {
 
   const handleTogglePayment = async (orderId: number, currentStatus: number) => {
     const newStatus = currentStatus === 1 ? 0 : 1;
+
+    isUpdatingRef.current = true;
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, is_paid: newStatus } : o));
+    const hostToken = localStorage.getItem(`hostToken-${roomInfo?.joinCode}`);
+
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
       const res = await fetch(`${apiUrl}/api/orders/${orderId}/pay`, {
         method: 'PATCH',
-        headers: authHeaders, // ★ 使用 authHeaders
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-Host-Token': hostToken || '' // 帶 Token
+        },
         body: JSON.stringify({ isPaid: newStatus === 1 })
       });
+      
       if (!res.ok) throw new Error('Update failed');
-    } catch (e) { alert('狀態更新失敗 (可能無權限)'); fetchData(true); }
+
+    } catch (e) { 
+      alert('狀態更新失敗'); 
+      fetchData(true); 
+    } finally {
+      isUpdatingRef.current = false;
+      fetchData(true);
+    }
   };
 
   const handleDeleteOrder = async (orderId: number, userName: string) => {
@@ -197,6 +219,32 @@ export default function HostDashboard() {
       await fetch(`${apiUrl}/api/orders/${orderId}`, { method: 'DELETE', headers: { 'X-Host-Token': hostToken || '' }});
       fetchData(true); 
     } catch (e) { alert('刪除失敗'); }
+  };
+
+  const handleRemoveSingleItem = async (orderId: number, itemIndex: number, itemName: string) => {
+    if (!confirm(`確定要刪除這個品項嗎？\n${itemName}`)) return;
+    
+    // 取得 Host Token
+    const hostToken = localStorage.getItem(`hostToken-${roomInfo?.joinCode || ''}`);
+
+    try {
+      const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
+      const res = await fetch(`${apiUrl}/api/orders/${orderId}/remove-item`, {
+        method: 'PATCH',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Host-Token': hostToken || ''
+        },
+        body: JSON.stringify({ itemIndex })
+      });
+
+      if (!res.ok) throw new Error('刪除失敗');
+      
+      // 成功後重新抓取資料
+      fetchData(true); 
+    } catch (e) {
+      alert('刪除品項失敗');
+    }
   };
 
   const openLockModal = () => { setExtraFeeInput('0'); setIsLockModalOpen(true); };
@@ -233,81 +281,119 @@ export default function HostDashboard() {
   const handleExportExcel = () => {
       if (orders.length === 0) return alert('目前沒有訂單可以匯出');
 
-      // 1. 準備上半部的「詳細訂單清單」 (這部分維持原樣，保留細節)
-      const detailRows = orders.flatMap(order => {
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet([[]]); // 初始化一個空的工作表
+      
+      // 設定欄寬 (美觀) - 稍微加寬一點以容納長品項
+      ws['!cols'] = [
+          {wch: 20}, // A: 名稱/時間
+          {wch: 30}, // B: 品項名稱
+          {wch: 10}, // C: 數量/單價
+          {wch: 15}, // D: 金額
+          {wch: 20}, // E: 備註/狀態
+          {wch: 15}  // F: 額外資訊
+      ];
+
+      let currentRow = 0; // 用來追蹤目前寫到第幾行
+
+      // ==========================================
+      // 區塊 1: 詳細訂單明細 (依人頭合併同品項)
+      // ==========================================
+
+      XLSX.utils.sheet_add_aoa(ws, [['★ 訂單明細 (核對發餐用)']], { origin: `A${currentRow + 1}` });
+      currentRow += 1;
+
+      XLSX.utils.sheet_add_aoa(ws, [['訂購人', '品項', '數量', '單價', '小計', '備註', '下單時間']], { origin: `A${currentRow + 1}` });
+      currentRow += 1;
+
+      const detailRows: any[][] = [];
+      
+      orders.forEach(order => {
           let items = [];
-          try { items = JSON.parse(order.items_json); } catch { }
-          return items.map((item: any) => ({
-              '下單時間': new Date(order.created_at).toLocaleString(),
-              '訂購人': order.user_name,
-              '品項': item.n,
-              '單價': item.p,
-              '狀態': order.is_paid ? '已付款' : '未付款'
-          }));
+          try { items = JSON.parse(order.items_json); } catch { return; }
+
+          // ★ 這裡做個人內部的合併 (Logic 與 useCart/aggregateItems 類似)
+          const personalSummary: Record<string, { n: string, p: number, count: number, note: string }> = {};
+          
+          items.forEach((item: any) => {
+              const key = `${item.n}-${item.p}-${item.note || ''}`;
+              if (!personalSummary[key]) {
+                  personalSummary[key] = { ...item, count: 0, note: item.note || '' };
+              }
+              personalSummary[key].count += 1;
+          });
+
+          // 轉成 Rows
+          Object.values(personalSummary).forEach(item => {
+              detailRows.push([
+                  order.user_name,           // A
+                  item.n,                    // B
+                  item.count,                // C (合併後的數量)
+                  item.p,                    // D
+                  item.p * item.count,       // E (小計)
+                  item.note,                 // F
+                  new Date(order.created_at).toLocaleString() // G
+              ]);
+          });
       });
 
-      // 建立工作表
-      const ws = XLSX.utils.json_to_sheet(detailRows);
+      XLSX.utils.sheet_add_aoa(ws, detailRows, { origin: `A${currentRow + 1}` });
+      currentRow += detailRows.length + 3; // 留空行
 
-      // 設定欄寬 (美觀)
-      ws['!cols'] = [{wch: 20}, {wch: 15}, {wch: 30}, {wch: 8}, {wch: 10}];
 
-      // --- 下半部：收款統計 (改為合併計算) ---
+      // ==========================================
+      // 區塊 2: 收款統計 (依人頭算錢)
+      // ==========================================
+
+      XLSX.utils.sheet_add_aoa(ws, [['★ 收款統計 (收錢用)']], { origin: `A${currentRow + 1}` });
+      currentRow += 1;
       
-      let currentRow = detailRows.length + 3; // 空兩行再開始寫統計
+      XLSX.utils.sheet_add_aoa(ws, [['姓名', '餐點總額', '運費/雜費', '應付總額', '付款狀態', '訂單筆數']], { origin: `A${currentRow + 1}` });
+      currentRow += 1;
 
-      // 寫入標題
-      XLSX.utils.sheet_add_aoa(ws, [['--- 收款統計 (依人數合併) ---']], { origin: `A${currentRow}` });
-      currentRow++;
-      
-      // 寫入表頭
-      XLSX.utils.sheet_add_aoa(ws, [['姓名', '餐點總額', '運費/雜費', '應付總額', '付款狀態', '訂單數']], { origin: `A${currentRow}` });
-      currentRow++;
-
-      // ★★★ 核心修改：依照姓名歸戶 (Group By User) ★★★
-      // 使用 Reduce 把同一個人的資料加在一起
+      // 這裡沿用你原本的邏輯，計算每個人總額
       const userSummary = orders.reduce((acc, order) => {
           if (!acc[order.user_name]) {
               acc[order.user_name] = {
-                  totalMeal: 0,      // 餐費總計
-                  allPaid: true,     // 是否全部已付
-                  orderCount: 0,     // 訂單筆數
+                  totalMeal: 0,
+                  allPaid: true,
+                  orderCount: 0,
               };
           }
           acc[order.user_name].totalMeal += order.total_price;
-          if (!order.is_paid) acc[order.user_name].allPaid = false; // 只要有一筆沒付，就視為未付清
+          if (!order.is_paid) acc[order.user_name].allPaid = false;
           acc[order.user_name].orderCount += 1;
           return acc;
       }, {} as Record<string, { totalMeal: number, allPaid: boolean, orderCount: number }>);
 
-      // 開始寫入合併後的資料
-      let grandTotal = 0; // 全團總金額
+      let grandTotal = 0;
+      const summaryRows: any[][] = [];
       
       Object.entries(userSummary).forEach(([name, data]) => {
-          // 運費只收一次 (feePerPerson 是前面算好的平均運費)
-          const shippingFee = feePerPerson; 
+          const shippingFee = feePerPerson; // 沿用 component 內算好的變數
           const finalAmount = data.totalMeal + shippingFee;
-          
           grandTotal += finalAmount;
 
-          XLSX.utils.sheet_add_aoa(ws, [[
+          summaryRows.push([
               name,
               data.totalMeal,
               shippingFee,
               finalAmount,
-              data.allPaid ? '已結清 ✅' : '未付清 ❌',
-              `${data.orderCount} 筆`
-          ]], { origin: `A${currentRow}` });
-          
-          currentRow++;
+              data.allPaid ? '已結清' : '未付清', // 簡化符號以免 Excel 編碼問題
+              data.orderCount
+          ]);
       });
 
-      // 最後加一個總計行
-      currentRow++;
-      XLSX.utils.sheet_add_aoa(ws, [['全團總計', '', '', grandTotal]], { origin: `A${currentRow}` });
+      // 加入總計行
+      summaryRows.push(['', '', '', '']); // 空一行
+      summaryRows.push(['全團總計', '', '', grandTotal]);
 
+      XLSX.utils.sheet_add_aoa(ws, summaryRows, { origin: `A${currentRow + 1}` });
+
+
+      // ==========================================
       // 匯出檔案
-      const wb = XLSX.utils.book_new();
+      // ==========================================
       XLSX.utils.book_append_sheet(wb, ws, "訂單統計");
       XLSX.writeFile(wb, `點餐統計_${roomInfo?.joinCode}_${new Date().toLocaleDateString()}.xlsx`);
   };
@@ -508,11 +594,23 @@ export default function HostDashboard() {
                 </div>
                 <div className="space-y-1.5">
                   {aggregateItems(JSON.parse(order.items_json)).map((item, idx) => (
-                    <div key={idx} className="text-sm text-gray-600 flex justify-between items-start">
-                      <div className="max-w-[80%]">
-                        <span>{item.n}</span>
-                        {item.count > 1 && (<span className="ml-2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold">x{item.count}</span>)}
-                        {item.note && <span className="text-xs text-gray-400 block">({item.note})</span>}
+                    <div key={idx} className="text-sm text-gray-600 flex justify-between items-start group/item">
+                      <div className="max-w-[80%] flex items-start gap-1">
+                        {/* ★ 新增：只有主揪才看得到的刪除小按鈕 */}
+                        {isHost && (
+                            <button 
+                                onClick={() => handleRemoveSingleItem(order.id, item.originalIndices[0], item.n)}
+                                className="text-gray-300 hover:text-red-500 transition-colors mt-0.5"
+                                title="刪除此品項 (若有多個則刪除一個)"
+                            >
+                                <XCircle size={14} />
+                            </button>
+                        )}                        
+                        <div>
+                            <span>{item.n}</span>
+                            {item.count > 1 && (<span className="ml-2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold">x{item.count}</span>)}
+                            {item.note && <span className="text-xs text-gray-400 block">({item.note})</span>}
+                        </div>
                       </div>
                       <span className="text-gray-400 min-w-[3rem] text-right font-medium">${item.subtotal}</span>
                     </div>

@@ -3,7 +3,9 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { 
   Plus, Coffee, Utensils, Search, X, QrCode, Clock, 
   ShoppingBag, PenSquare, ChevronRight, Wallet, Loader2, 
-  Flame, ScanLine
+  Flame, ScanLine,
+  PlusIcon, Crown,
+  Minus
 } from 'lucide-react';
 import QRCode from "react-qr-code";
 import { Trash2 } from 'lucide-react'; 
@@ -38,7 +40,7 @@ export default function OrderRoom() {
   } = useRoomData(id, userName, userToken);
 
   // 2. 購物車 Hook
-  const { cart, addToCart, removeFromCart, clearCart, totalCartPrice, totalCartCount } = useCart(id);
+  const { cart, addToCart, removeFromCart, updateItemCount, clearCart, totalCartPrice, totalCartCount } = useCart(id);
 
   // 3. 頁面 UI 狀態
   const [activeCategory, setActiveCategory] = useState<string>('');
@@ -224,14 +226,29 @@ export default function OrderRoom() {
     
     const feePerPerson = Math.ceil(rawFeePerPerson / 5) * 5;
 
-    const myItems = myOrders.flatMap(o => {
+    const rawItems = myOrders.flatMap(o => {
         try { return JSON.parse(o.items_json); } catch { return []; }
     });
+
+    const aggregatedItems = rawItems.reduce((acc: any[], curr: any) => {
+        const key = `${curr.n}-${curr.p}`; 
+        
+        const existing = acc.find(item => item._key === key);
+        if (existing) {
+            existing.count += 1;
+            // existing.subtotal += curr.p; // 不需要手動累加 subtotal，顯示時用 p * count 即可，或這裡算好也可
+        } else {
+            acc.push({ ...curr, count: 1, _key: key });
+        }
+        return acc;
+    }, []);
+
+
     const subtotal = myOrders.reduce((sum, o) => sum + o.total_price, 0);
     const myTotalFee = feePerPerson; 
     const finalTotal = subtotal + myTotalFee;
 
-    return { myItems, subtotal, myTotalFee, finalTotal, feePerPerson, orderCount: myOrders.length };
+    return { myItems: aggregatedItems, subtotal, myTotalFee, finalTotal, feePerPerson, orderCount: myOrders.length };
   }, [existingOrders, roomInfo, userName]);
 
   // --- Render ---
@@ -247,14 +264,44 @@ export default function OrderRoom() {
     <>
       <div className="flex-1 overflow-y-auto p-4 custom-scrollbar space-y-3">
         {cart.map(item => (
-            <div key={item.id} className="flex justify-between bg-white p-3 rounded-xl shadow-sm border border-gray-100">
-                <div>
-                    <div className="font-bold text-gray-800">{item.n} {item.count > 1 && `x${item.count}`}</div>
-                    <div className="text-xs text-gray-500 mt-1">{item.optionName} {item.note && `(${item.note})`}</div>
+            <div key={item.id} className="bg-white p-3 rounded-xl shadow-sm border border-gray-100 flex flex-col gap-2">
+                {/* 上半部：品項名稱與價格 */}
+                <div className="flex justify-between items-start">
+                    <div>
+                        <div className="font-bold text-gray-800 text-base">{item.n}</div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                           {item.optionName} {item.note && `(${item.note})`}
+                        </div>
+                    </div>
+                    <span className="font-bold text-gray-900">${item.price * item.count}</span>
                 </div>
-                <div className="flex flex-col items-end justify-between">
-                    <span className="font-bold">${item.price * item.count}</span>
-                    <button onClick={() => removeFromCart(item.id)} className="text-gray-300 hover:text-red-500"><Trash2 size={16}/></button>
+                
+                {/* 下半部：數量控制區 */}
+                <div className="flex justify-between items-center pt-2 border-t border-gray-50 mt-1">
+                     <button 
+                       onClick={() => removeFromCart(item.id)} 
+                       className="text-xs text-gray-300 hover:text-red-500 flex items-center gap-1 px-2 py-1 rounded hover:bg-red-50 transition-colors"
+                     >
+                        <Trash2 size={14}/> 刪除
+                     </button>
+
+                     <div className="flex items-center gap-3 bg-gray-50 rounded-lg p-1">
+                        <button 
+                          onClick={() => updateItemCount(item.id, -1)} 
+                          className="w-7 h-7 flex items-center justify-center bg-white rounded-md shadow-sm border border-gray-200 text-gray-600 hover:bg-gray-100 active:scale-95 transition-all"
+                        >
+                          <Minus size={14} />
+                        </button>
+                        
+                        <span className="font-bold text-gray-800 min-w-[1.5rem] text-center">{item.count}</span>
+                        
+                        <button 
+                          onClick={() => updateItemCount(item.id, 1)} 
+                          className="w-7 h-7 flex items-center justify-center bg-white rounded-md shadow-sm border border-gray-200 text-green-600 hover:bg-green-50 active:scale-95 transition-all"
+                        >
+                          <PlusIcon size={14} />
+                        </button>
+                     </div>
                 </div>
             </div>
         ))}
@@ -281,7 +328,6 @@ export default function OrderRoom() {
             )}
         </button>
         {/* ★★★ 修改結束 ★★★ */}
-        
       </div>
     </>
   );
@@ -303,7 +349,25 @@ export default function OrderRoom() {
                 <div className="px-4 py-3 flex justify-between items-center">
                     <div><div className="text-xs text-gray-400 font-bold">Room Code</div><div className="text-xl font-black text-gray-800">{id}</div></div>
                     <div className="flex gap-2 items-center">
-                        <button onClick={() => navigate(`/room/${id}/host`)} className={`text-xs px-3 py-1.5 rounded-full font-bold ${isHost ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-600'}`}>{isHost ? '主揪後台' : '查看訂單'}</button>
+                        <button
+                            onClick={() => navigate(`/room/${id}/host`)}
+                            className={`
+                              text-xs rounded-full font-bold transition-all duration-200 active:scale-95 flex items-center justify-center gap-1
+                              ${isHost
+                                  ? 'bg-gradient-to-r from-amber-400 via-yellow-500 to-amber-500 text-white shadow-sm hover:shadow-md hover:scale-105 px-3 pl-2.5 py-1.5'
+                                  : 'bg-gray-900 text-white hover:bg-black px-3 py-1.5'
+                              }
+                            `}
+                        >
+                            {isHost ? (
+                                <>
+                                    <Crown size={14} className="text-yellow-100 fill-current" />
+                                    <span>主揪後台</span>
+                                </>
+                            ) : (
+                                '查看訂單'
+                            )}
+                        </button>
                         <button onClick={() => setIsQrOpen(true)} className="bg-gray-100 text-gray-600 p-1.5 rounded-full"><QrCode size={20} /></button>
                         <div className="text-sm font-bold bg-orange-50 text-orange-600 px-3 py-1.5 rounded-full border border-orange-100">{userName}</div>
                     </div>
@@ -364,11 +428,11 @@ export default function OrderRoom() {
                              className="bg-gray-900 text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-black transition-colors"
                            >
                                 {isFetchingQr ? <Loader2 className="animate-spin" size={18}/> : <Wallet size={18}/>} 
-                                轉帳 QR
+                                網銀轉帳QR CODE
                            </button>
                         ) : (
                            <div className="bg-gray-100 text-gray-400 py-3 rounded-xl font-bold flex items-center justify-center gap-2 cursor-not-allowed text-sm">
-                              無收款碼
+                              無提供轉帳服務
                            </div>
                         )}
                     </div>
@@ -510,7 +574,7 @@ export default function OrderRoom() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4" onClick={() => setIsPayModalOpen(false)}>
           <div className="bg-white p-6 rounded-3xl shadow-2xl flex flex-col items-center relative max-w-sm w-full" onClick={e => e.stopPropagation()}>
             <button onClick={() => setIsPayModalOpen(false)} className="absolute top-4 right-4 p-2 bg-gray-50 rounded-full hover:bg-gray-100"><X size={20}/></button>
-            <h3 className="text-xl font-bold text-gray-900 mb-4">掃碼付款</h3>
+            <h3 className="text-xl font-bold text-gray-900 mb-4">掃QR CODE轉帳</h3>
             <img src={paymentQrImage} alt="Payment QR" className="max-w-full max-h-[400px] object-contain rounded-lg" />
           </div>
         </div>
@@ -550,18 +614,29 @@ export default function OrderRoom() {
             {/* Items List: 滾動區域 */}
             {/* 修改點 2: 改用 flex-1 overflow-y-auto min-h-0 讓它自動伸縮 */}
             <div className="px-8 py-4 space-y-4 flex-1 overflow-y-auto min-h-0 custom-scrollbar bg-white">
-               {myBillData.myItems.map((item: any, idx: number) => (
-                 <div key={idx} className="flex flex-col gap-1">
+              {myBillData.myItems.map((item: any, idx: number) => (
+                <div key={idx} className="flex flex-col gap-1">
                     <div className="flex justify-between items-baseline text-gray-800">
-                      <span className="font-bold text-base">{item.n.split(' (')[0]}</span>
-                      <span className="flex-1 mx-2 border-b border-dotted border-gray-300 relative -top-1"></span>
-                      <span className="font-mono font-bold text-lg">${item.p}</span>
+                      <span className="font-bold text-base flex items-center gap-2">
+                        {/* 顯示名稱 */}
+                        {item.n.split(' (')[0]}                  
+                        {item.count > 1 && (
+                            <span className="bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold self-center">
+                                x{item.count}
+                            </span>
+                        )}
+                      </span>                      
+                      <span className="flex-1 mx-2 border-b border-dotted border-gray-300 relative -top-1"></span>            
+                      {/* ★ 修改：顯示總價 (單價 * 數量) */}
+                      <span className="font-mono font-bold text-lg">${item.p * item.count}</span>
+                    </div>                    
+                    <div className="text-xs text-gray-400 pl-1 flex justify-between">
+                      <span>{item.n.match(/\((.*?)\)/)?.[1] || item.optionName || '單品'}</span>
+                      {/* 選填：如果數量 > 1，也可以在這裡顯示單價提示，例如 "$60/份" */}
+                      {item.count > 1 && <span>(單價 ${item.p})</span>}
                     </div>
-                    <div className="text-xs text-gray-400 pl-1">
-                       {item.n.match(/\((.*?)\)/)?.[1] || item.optionName || '單品'}
-                    </div>
-                 </div>
-               ))}
+                </div>
+              ))}
                
                {myBillData.myTotalFee > 0 && (
                  <div className="bg-orange-50 p-3 rounded-lg border border-orange-100 flex justify-between items-center text-sm text-orange-800 mt-2">

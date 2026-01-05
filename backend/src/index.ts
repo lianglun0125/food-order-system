@@ -139,6 +139,38 @@ app.patch('/api/groups/:id/menu', async (c) => {
   return c.json({ success: true });
 })
 
+app.patch('/api/orders/:id/remove-item', async (c) => {
+  const orderId = c.req.param('id');
+  const { itemIndex } = await c.req.json(); // 接收要刪除的陣列索引
+
+  const order = await c.env.DB.prepare('SELECT group_id, items_json FROM orders WHERE id = ?').bind(orderId).first();
+  if (!order) return c.json({ error: '訂單不存在' }, 404);
+
+  const isHost = await verifyHost(c, order.group_id as string);
+  if (!isHost) return c.json({ error: '權限不足' }, 401);
+  
+  let items = [];
+  try { items = JSON.parse(order.items_json as string); } catch (e) { return c.json({ error: '資料解析錯誤' }, 500); }
+
+  if (typeof itemIndex !== 'number' || itemIndex < 0 || itemIndex >= items.length) {
+    return c.json({ error: '無效的索引值' }, 400);
+  }
+
+  items.splice(itemIndex, 1);
+
+  let newTotalPrice = 0;
+  items.forEach((item: any) => {
+    newTotalPrice += Number(item.p) || 0;
+  });
+
+  await c.env.DB.prepare('UPDATE orders SET items_json = ?, total_price = ? WHERE id = ?')
+    .bind(JSON.stringify(items), newTotalPrice, orderId).run();
+
+  return c.json({ success: true, newTotalPrice });
+});
+
+
+
 // ★★★ 核心修改：建立房間 API (包含 Rate Limit, Turnstile Verify, JoinCode Retry) ★★★
 app.post('/api/groups', async (c) => {
   try {
@@ -191,31 +223,23 @@ app.post('/api/groups', async (c) => {
     Task: Convert the menu image into strict JSON.
     Language: Traditional Chinese (繁體中文).
 
-    *** CRITICAL LAYOUT ANALYSIS (MUST READ) ***
-    1. **The "Shared Noodle" Pattern:** - In this menu, sections like "湯麵類" or "乾麵類" use a GRID layout.
-       - **LEFT COLUMN:** Lists the dish names (e.g., 牛肉麵, 客家麵, 餛飩麵) and prices.
-       - **RIGHT COLUMN:** Lists the noodle types (e.g., 拉麵, 陽春麵, 冬粉, 粄條).
-       - **RULE:** The text on the right acts as "choices" for ALL items on the left in that section.
-       - **ACTION:** DO NOT create items named "拉麵" or "陽春麵". Instead, add ["拉麵", "陽春麵", "冬粉", "粄條", "米粉"] (and any others found) to the "choices" array of EVERY dish in that category.
+    *** STRICT NO-HALLUCINATION POLICY ***
+    1. **VISUAL EVIDENCE ONLY:** Do NOT infer options unless they are visually present.
+    2. **Exception for Drinks:** You MUST provide sugar/ice options for drinks (see below).
 
-    2. **Drink Sizes:**
-       - If you see "飲料(小)" and "飲料(大)", merge them into ONE item "飲料".
-       - Add options: [{"name": "小", "price": 20}, {"name": "大", "price": 30}].
-
-    *** EXTREMELY IMPORTANT: ONE-SHOT EXAMPLE ***
-    If you see a layout like this:
-    [客家麵 60]   [拉麵 陽春麵]
-    [餛飩麵 60]   [冬粉 粄條]
+    *** DRINK LOGIC (CRITICAL) ***
+    If an item is a drink ("is_drink": true):
+    1. **Sugar/Ice Options:**
+       - **Case A (Menu lists specific options):** If the menu specifically lists sugar levels (e.g. "半糖/微糖") or ice levels, use those text values for "sugar_opts" and "ice_opts".
+       - **Case B (Standard Drink, no specific text):** If the menu is a standard drink shop menu but DOES NOT list specific sugar/ice levels, YOU MUST USE THE FOLLOWING DEFAULTS:
+         * "sugar_opts": ["全糖", "八分糖", "半糖", "三分糖", "一分糖", "無糖"]
+         * "ice_opts": ["正常冰", "少冰", "微冰", "去冰", "完全去冰"]
     
-    You MUST output this structure for "客家麵" and "餛飩麵":
-    {
-      "n": "客家麵",
-      "p": 60,
-      "choices": ["拉麵", "陽春麵", "冬粉", "粄條"]
-    }
+    2. **Price Options (Sizes):**
+       - Only create "options" (for price variants) if visually present (e.g. M $30 / L $40).
 
     *** JSON OUTPUT RULES ***
-    Return ONLY a raw JSON object (no markdown, no \`\`\`json).
+    Return ONLY a raw JSON object.
     Structure:
     {
       "global_extras": [ {"n": "Name", "p": Price} ],
@@ -226,9 +250,10 @@ app.post('/api/groups', async (c) => {
             {
               "n": "Item Name",
               "p": BasePrice,
-              "is_drink": false,
-              "options": [ {"name": "Spec Name (Size/Add-on)", "price": 0} ],
-              "choices": [ "String1", "String2" ] 
+              "is_drink": true, // Must be identified correctly
+              "options": [ {"name": "L", "price": 10} ], // Price modifiers (Size)
+              "sugar_opts": ["全糖", "半糖"], // Sugar levels
+              "ice_opts": ["少冰", "去冰"]    // Ice levels
             }
           ]
         }
