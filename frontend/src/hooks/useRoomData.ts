@@ -31,7 +31,17 @@ export function useRoomData(roomId: string | undefined, userName: string, userTo
       }
       if (!roomRes.ok) throw new Error('無法讀取房間資料');
       
-      const roomData: RoomInfo = await roomRes.json();
+      //const roomData: RoomInfo = await roomRes.json();
+      //setRoomInfo(roomData);
+      
+      // --- 這是新的程式碼 (請貼上這個) ---
+      const rawData = await roomRes.json();
+      const correctedMenu = rawData.menu || rawData.menu_json || { categories: [] };
+      const roomData: RoomInfo = {
+        ...rawData,
+        menu: correctedMenu
+      };
+
       setRoomInfo(roomData);
 
       // 2. 解析菜單 (只在第一次載入時執行，避免畫面閃爍)

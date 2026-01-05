@@ -36,4 +36,5 @@ export type RoomInfo = {
     global_extras?: ExtraOption[];
     items?: MenuItem[]; // 兼容舊格式
   };
+  menu_json?: any;
 };
