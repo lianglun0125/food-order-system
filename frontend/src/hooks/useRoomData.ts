@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSmartPolling } from './useSmartPolling';
 import type { Category, ExtraOption, RoomInfo, Order } from '../types';
@@ -113,7 +113,7 @@ export function useRoomData(roomId: string | undefined, userName: string, userTo
   }, 10000, !!userName && !!roomInfo);
 
   // 倒數計時邏輯 (純前端計算)
-  useMemo(() => {
+  useEffect(() => {
     // ★★★ 修正點：如果狀態是 LOCKED，顯示「已截止」，而不是隱藏 ★★★
     if (roomInfo?.status === 'LOCKED') {
       setTimeLeft({ str: '已截止', isUrgent: false });

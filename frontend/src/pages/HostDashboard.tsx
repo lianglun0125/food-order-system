@@ -188,7 +188,8 @@ export default function HostDashboard() {
 
     isUpdatingRef.current = true;
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, is_paid: newStatus } : o));
-    const hostToken = localStorage.getItem(`hostToken-${roomInfo?.join_code}`);
+    const hostToken = localStorage.getItem(`hostToken-${id}`);
+    
 
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
@@ -225,7 +226,7 @@ export default function HostDashboard() {
     if (!confirm(`確定要刪除這個品項嗎？\n${itemName}`)) return;
     
     // 取得 Host Token
-    const hostToken = localStorage.getItem(`hostToken-${roomInfo?.join_code || ''}`);
+    const hostToken = localStorage.getItem(`hostToken-${id}`);
 
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');

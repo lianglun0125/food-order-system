@@ -1,7 +1,21 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, Camera, Loader2, ImagePlus, Clock, QrCode, XCircle } from 'lucide-react';
+import { Upload, Camera, Loader2, ImagePlus, Clock, QrCode, XCircle, Sparkles, BrainCircuit, FileJson, Coffee } from 'lucide-react';
 import { Turnstile } from '@marsidev/react-turnstile';
+
+
+// 改true 可以測css 分析動畫
+const IS_TEST_MODE = false;
+
+// 定義有趣的載入步驟
+const LOADING_STEPS = [
+  { text: "🚀 正在將菜單發射到火星...", icon: <Upload className="animate-bounce" /> },
+  { text: "🔍 AI 正在睜大眼睛掃描菜單...", icon: <Sparkles className="animate-spin" /> },
+  { text: "🧠 正在用力理解這是什麼好吃的...", icon: <BrainCircuit className="animate-pulse" /> },
+  { text: "🍱 正在把價格跟品項配對起來...", icon: <FileJson className="animate-pulse" /> },
+  { text: "✨ 就快好了！正在做最後整理...", icon: <Loader2 className="animate-spin" /> },
+  { text: "🐌 這次菜單比較複雜，AI 正在加班處理中...", icon: <Coffee className="animate-bounce" /> }
+];
 
 export default function HostOrder() {
   const navigate = useNavigate();
@@ -17,31 +31,104 @@ export default function HostOrder() {
   const [turnstileToken, setTurnstileToken] = useState<string>('');
   const [timeOption, setTimeOption] = useState<'none' | '11:00' | '14:30' | 'custom'>('none');
   const [customTime, setCustomTime] = useState({ period: 'AM', hour: '11', minute: '00' });
+  
+  // 拖曳狀態
+  const [isDragging, setIsDragging] = useState(false);
+  const [isQrDragging, setIsQrDragging] = useState(false);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
-    if (selectedFile) {
-      if (selectedFile.size > 5 * 1024 * 1024) { setError('圖片太大囉！請小於 5MB'); return; }
-      setFile(selectedFile);
-      setPreviewUrl(URL.createObjectURL(selectedFile));
-      setError(null);
+  // ★★★ 新增：載入步驟狀態 ★★★
+  const [loadingStep, setLoadingStep] = useState(0);
+
+  // 處理載入步驟的計時器
+  useEffect(() => {
+    if (!isLoading) {
+      setLoadingStep(0);
+      return;
     }
+
+    // 設定每個階段的時間點 (毫秒)
+    // 0s, 3s, 10s, 18s, 25s, 35s
+    const timePoints = [3000, 10000, 18000, 25000, 35000];
+    
+    // ★ 修正 1: 改用 ReturnType<typeof setTimeout>，相容所有環境
+    const timers: ReturnType<typeof setTimeout>[] = [];
+
+    // ★ 修正 2: 移除未使用的 index 參數
+    timePoints.forEach((time) => {
+      const timer = setTimeout(() => {
+        setLoadingStep(prev => Math.min(prev + 1, LOADING_STEPS.length - 1));
+      }, time);
+      timers.push(timer);
+    });
+
+    return () => timers.forEach(clearTimeout);
+  }, [isLoading]);
+
+  // 通用的檔案處理函式
+  const processFile = (selectedFile: File | undefined) => {
+      if (selectedFile) {
+        if (!selectedFile.type.startsWith('image/')) { setError('請上傳圖片檔案'); return; }
+        if (selectedFile.size > 5 * 1024 * 1024) { setError('菜單圖片太大囉！請小於 5MB'); return; }
+        setFile(selectedFile);
+        setPreviewUrl(URL.createObjectURL(selectedFile));
+        setError(null);
+      }
   };
 
-  const handleQrChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
-    if (selectedFile) {
-      if (selectedFile.size > 2 * 1024 * 1024) { setError('收款碼圖片太大囉！請小於 2MB'); return; }
-      setQrFile(selectedFile);
-      setQrPreviewUrl(URL.createObjectURL(selectedFile));
-    }
+  const processQrFile = (selectedFile: File | undefined) => {
+      if (selectedFile) {
+        if (!selectedFile.type.startsWith('image/')) { setError('請上傳圖片檔案'); return; }
+        if (selectedFile.size > 2 * 1024 * 1024) { setError('收款碼圖片太大囉！請小於 2MB'); return; }
+        setQrFile(selectedFile);
+        setQrPreviewUrl(URL.createObjectURL(selectedFile));
+        setError(null);
+      }
   };
+
+  // Drag Events
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => processFile(e.target.files?.[0]);
+  const onDragOver = (e: React.DragEvent<HTMLDivElement>) => { e.preventDefault(); if(!isLoading) setIsDragging(true); };
+  const onDragLeave = (e: React.DragEvent<HTMLDivElement>) => { e.preventDefault(); setIsDragging(false); };
+  const onDrop = (e: React.DragEvent<HTMLDivElement>) => { e.preventDefault(); setIsDragging(false); if(!isLoading) processFile(e.dataTransfer.files?.[0]); };
+
+  const handleQrChange = (e: React.ChangeEvent<HTMLInputElement>) => processQrFile(e.target.files?.[0]);
+  const onQrDragOver = (e: React.DragEvent<HTMLDivElement>) => { e.preventDefault(); if(!isLoading) setIsQrDragging(true); };
+  const onQrDragLeave = (e: React.DragEvent<HTMLDivElement>) => { e.preventDefault(); setIsQrDragging(false); };
+  const onQrDrop = (e: React.DragEvent<HTMLDivElement>) => { e.preventDefault(); setIsQrDragging(false); if(!isLoading) processQrFile(e.dataTransfer.files?.[0]); };
 
   const handleUpload = async () => {
+    // 測試模式下，可以略過 Turnstile 檢查，方便一直重測
     if (!file) return;
-    if (!turnstileToken) { setError('請完成驗證，拜偷拜偷'); return; }
-    setIsLoading(true); setError(null);
+    if (!IS_TEST_MODE && !turnstileToken) { setError('請完成驗證，拜偷拜偷'); return; }
+    
+    setIsLoading(true); 
+    setError(null);
+    setLoadingStep(0); // 重置步驟
+
     try {
+      // --- ★★★ 測試模式攔截區 ★★★ ---
+      if (IS_TEST_MODE) {
+        console.log("進入測試模式：不發送 API，純跑動畫...");
+        
+        // 模擬 30 秒的等待時間 (剛好跑完所有動畫步驟)
+        await new Promise(resolve => setTimeout(resolve, 30000));
+        
+        // 模擬 API 回傳的成功資料
+        const mockData = {
+            join_code: "8888", // 假房間號
+            hostToken: "mock-token-123",
+            success: true
+        };
+        
+        console.log("測試結束，模擬跳轉");
+        localStorage.setItem(`hostToken-${mockData.join_code}`, mockData.hostToken);
+        localStorage.setItem(`isHost-${mockData.join_code}`, 'true');
+        navigate(`/room/${mockData.join_code}`);
+        return; // 直接結束，不執行下方真正的 API 呼叫
+      }
+      // -------------------------------
+
+      // 以下是原本的真實邏輯 (保持不動)
       let deadlineTimestamp = null;
       if (timeOption !== 'none') {
         const now = new Date();
@@ -50,6 +137,7 @@ export default function HostOrder() {
         else { const [h, m] = timeOption.split(':'); targetHour = parseInt(h); targetMinute = parseInt(m); }
         deadlineTimestamp = new Date(now.getFullYear(), now.getMonth(), now.getDate(), targetHour, targetMinute, 0).getTime();
       }
+      
       const formData = new FormData();
       formData.append('image', file);
       if (qrFile) formData.append('paymentQr', qrFile);
@@ -59,21 +147,42 @@ export default function HostOrder() {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
       const res = await fetch(`${apiUrl}/api/groups`, { method: 'POST', body: formData });
       const data = await res.json();
+      
       if (!res.ok) { setTurnstileToken(''); throw new Error(data.error || '上傳失敗'); }
-      localStorage.setItem(`hostToken-${data.joinCode}`, data.hostToken);
-      localStorage.setItem(`isHost-${data.joinCode}`, 'true');
-      navigate(`/room/${data.joinCode}`);
-    } catch (err) { setError(err instanceof Error ? err.message : '發生未知錯誤'); } finally { setIsLoading(false); }
+      
+      localStorage.setItem(`hostToken-${data.join_code}`, data.hostToken);
+      localStorage.setItem(`isHost-${data.join_code}`, 'true');
+      navigate(`/room/${data.join_code}`);
+
+    } catch (err) { 
+      setError(err instanceof Error ? err.message : '發生未知錯誤'); 
+    } finally { 
+      setIsLoading(false); 
+    }
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-orange-50 to-red-50 flex flex-col items-center justify-center p-4 relative overflow-hidden">
+      {/* 掃描線動畫 CSS */}
+      <style>{`
+        @keyframes scan {
+          0% { top: 0%; opacity: 0; }
+          10% { opacity: 1; }
+          90% { opacity: 1; }
+          100% { top: 100%; opacity: 0; }
+        }
+        .scan-line {
+          animation: scan 2s linear infinite;
+          background: linear-gradient(to right, transparent, #fb923c, #ef4444, transparent);
+          box-shadow: 0 0 10px rgba(249, 115, 22, 0.5);
+        }
+      `}</style>
+
       <div className="absolute top-0 right-0 w-64 h-64 bg-orange-200 rounded-full mix-blend-multiply filter blur-3xl opacity-20 translate-x-1/2 -translate-y-1/2"></div>
       <div className="absolute bottom-0 left-0 w-64 h-64 bg-yellow-200 rounded-full mix-blend-multiply filter blur-3xl opacity-20 -translate-x-1/2 translate-y-1/2"></div>
 
       <div className="w-full max-w-md bg-white/90 backdrop-blur-xl rounded-3xl shadow-2xl border border-white/50 overflow-hidden p-6 space-y-5 relative z-10 animate-in fade-in zoom-in-95 duration-300">
         
-        {/* ★★★ 標題區塊：flex-row (橫排), items-center (垂直置中), justify-center (水平置中) ★★★ */}
         <div className="flex items-center justify-center gap-5 pb-2">
           <div className="shrink-0 inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-orange-100 text-orange-600 shadow-sm border border-orange-200">
             <Camera size={32} />
@@ -84,72 +193,150 @@ export default function HostOrder() {
           </div>
         </div>
 
-        {/* 圖片上傳區 */}
+        {/* 菜單圖片上傳區 */}
         <div 
-          onClick={() => fileInputRef.current?.click()}
-          className={`relative cursor-pointer group border-3 border-dashed rounded-2xl h-48 flex flex-col items-center justify-center transition-all duration-300 overflow-hidden ${previewUrl ? 'border-orange-400 bg-orange-50' : 'border-gray-300 hover:border-orange-400 hover:bg-orange-50/50 bg-gray-50'}`}
+          onClick={() => !isLoading && fileInputRef.current?.click()}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+          className={`
+            relative cursor-pointer group border-3 border-dashed rounded-2xl h-64 
+            flex flex-col items-center justify-center transition-all duration-300 overflow-hidden
+            ${isDragging 
+                ? 'border-orange-500 bg-orange-100 scale-105 shadow-xl' 
+                : previewUrl 
+                    ? 'border-orange-400 bg-orange-50' 
+                    : 'border-gray-300 hover:border-orange-400 hover:bg-orange-50/50 bg-gray-50'
+            }
+            ${isLoading ? 'cursor-wait border-orange-300' : ''} 
+          `}
         >
           <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" />
-          {previewUrl ? (
-            <div className="relative w-full h-full p-2">
+          
+          {isLoading ? (
+             // ★★★ 載入中的特效 (掃描線 + 遮罩) ★★★
+             <div className="absolute inset-0 z-20 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center text-white p-4">
+                {previewUrl && (
+                   <img src={previewUrl} className="absolute inset-0 w-full h-full object-contain opacity-20" alt="Scanning" />
+                )}
+                
+                {/* 掃描線 */}
+                <div className="absolute left-0 w-full h-[2px] scan-line z-10"></div>
+
+                {/* 動態文字區 */}
+                <div className="relative z-30 flex flex-col items-center text-center space-y-4 animate-in fade-in slide-in-from-bottom-4 duration-500 key={loadingStep}">
+                   <div className="w-16 h-16 bg-white/10 rounded-full flex items-center justify-center backdrop-blur-md shadow-lg ring-1 ring-white/20">
+                      {LOADING_STEPS[loadingStep].icon}
+                   </div>
+                   <div className="space-y-1">
+                      <p className="font-bold text-lg tracking-wide">{LOADING_STEPS[loadingStep].text}</p>
+                      <p className="text-xs text-white/60 font-mono">Process time: {Math.min((loadingStep + 1) * 5, 30)}s estimated</p>
+                   </div>
+                </div>
+             </div>
+          ) : isDragging ? (
+             <div className="pointer-events-none flex flex-col items-center animate-bounce">
+                <Upload size={48} className="text-orange-500 mb-2" />
+                <p className="font-black text-orange-600 text-lg">放開菜單圖</p>
+             </div>
+          ) : previewUrl ? (
+            <div className="relative w-full h-full p-2 pointer-events-none">
               <img src={previewUrl} alt="Preview" className="w-full h-full object-contain rounded-xl shadow-sm" />
               <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity rounded-xl m-2 backdrop-blur-sm">
                 <p className="text-white font-bold flex items-center gap-2"><ImagePlus size={20} /> 更換圖片</p>
               </div>
             </div>
           ) : (
-            <div className="text-center space-y-2 p-6 transition-transform group-hover:scale-105 duration-300">
+            <div className="text-center space-y-2 p-6 transition-transform group-hover:scale-105 duration-300 pointer-events-none">
               <div className="bg-white p-3 rounded-full inline-block shadow-md text-gray-400 group-hover:text-orange-500"><Upload size={24} /></div>
-              <div><p className="font-bold text-gray-700">點擊上傳菜單</p></div>
+              <div>
+                  <p className="font-bold text-gray-700">點擊或拖曳上傳菜單</p>
+                  <p className="text-xs text-gray-400 mt-1">支援 JPG, PNG (Max 5MB)</p>
+              </div>
             </div>
           )}
         </div>
 
-        {/* 收款碼上傳區 */}
-        <div className="flex items-center gap-3 bg-white p-3 rounded-xl border border-gray-200 shadow-sm hover:border-orange-200 transition-colors">
+        {/* 下方區塊：載入時隱藏或禁用 (避免干擾) */}
+        <div className={`space-y-5 transition-opacity duration-300 ${isLoading ? 'opacity-40 pointer-events-none grayscale' : 'opacity-100'}`}>
+            {/* 收款碼上傳區 */}
             <div 
                 onClick={() => qrInputRef.current?.click()}
-                className="w-12 h-12 bg-gray-50 rounded-lg border-2 border-dashed border-gray-300 flex items-center justify-center cursor-pointer hover:border-orange-400 shrink-0 overflow-hidden relative"
+                onDragOver={onQrDragOver}
+                onDragLeave={onQrDragLeave}
+                onDrop={onQrDrop}
+                className={`
+                    flex items-center gap-3 p-3 rounded-xl border transition-all cursor-pointer relative
+                    ${isQrDragging 
+                        ? 'bg-blue-50 border-blue-400 shadow-md scale-[1.02]' 
+                        : 'bg-white border-gray-200 hover:border-orange-200 shadow-sm'
+                    }
+                `}
             >
                 <input type="file" ref={qrInputRef} onChange={handleQrChange} accept="image/*" className="hidden" />
-                {qrPreviewUrl ? (<img src={qrPreviewUrl} className="w-full h-full object-cover" />) : (<QrCode size={20} className="text-gray-400" />)}
+                
+                <div className={`
+                    w-12 h-12 rounded-lg border-2 border-dashed flex items-center justify-center shrink-0 overflow-hidden relative transition-colors
+                    ${isQrDragging ? 'border-blue-400 bg-blue-100' : 'bg-gray-50 border-gray-300'}
+                `}>
+                    {qrPreviewUrl ? (
+                        <img src={qrPreviewUrl} className="w-full h-full object-cover" />
+                    ) : (
+                        <QrCode size={20} className={isQrDragging ? "text-blue-500" : "text-gray-400"} />
+                    )}
+                </div>
+
+                <div className="flex-1 min-w-0 pointer-events-none">
+                    {isQrDragging ? (
+                        <p className="font-bold text-blue-600">放開以設定收款碼</p>
+                    ) : (
+                        <>
+                            <p className="font-bold text-gray-800 text-sm">收款 QR Code <span className="text-gray-400 font-normal text-xs">(選填)</span></p>
+                            <p className="text-xs text-gray-400 mt-0.5 truncate">拖曳或點擊上傳，方便大家轉帳。</p>
+                        </>
+                    )}
+                </div>
+                
+                {qrPreviewUrl && !isLoading && (
+                    <button 
+                        onClick={(e) => { e.stopPropagation(); setQrFile(null); setQrPreviewUrl(null); }} 
+                        className="p-1.5 bg-gray-100 rounded-full hover:bg-gray-200 z-10"
+                    >
+                        <XCircle size={16} className="text-gray-500"/>
+                    </button>
+                )}
             </div>
-            <div className="flex-1 min-w-0">
-                <p className="font-bold text-gray-800 text-sm">收款 QR Code <span className="text-gray-400 font-normal text-xs">(選填)</span></p>
-                <p className="text-xs text-gray-400 mt-0.5 truncate">上傳街口或銀行轉帳碼，方便收款。</p>
+
+            {/* 時間設定 */}
+            <div className="space-y-2">
+            <label className="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1 ml-1"><Clock size={14} /> 結單時間 (選填)</label>
+            <div className="grid grid-cols-4 gap-2">
+                {[ { id: 'none', label: '不限時' }, { id: '11:00', label: '11:00' }, { id: '14:30', label: '14:30' }, { id: 'custom', label: '自訂' }, ].map((opt) => (
+                <button key={opt.id} onClick={() => setTimeOption(opt.id as any)} className={`py-2 rounded-xl text-xs font-bold transition-all border ${timeOption === opt.id ? 'bg-orange-100 border-orange-500 text-orange-700 shadow-sm' : 'bg-white border-gray-200 hover:bg-gray-50 text-gray-600'}`}>{opt.label}</button>
+                ))}
             </div>
-            {qrPreviewUrl && (<button onClick={(e) => { e.stopPropagation(); setQrFile(null); setQrPreviewUrl(null); }} className="p-1.5 bg-gray-100 rounded-full hover:bg-gray-200"><XCircle size={16} className="text-gray-500"/></button>)}
-        </div>
-
-        {/* 時間設定 */}
-        <div className="space-y-2">
-          <label className="text-xs font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1 ml-1"><Clock size={14} /> 結單時間 (選填)</label>
-          <div className="grid grid-cols-4 gap-2">
-            {[ { id: 'none', label: '不限時' }, { id: '11:00', label: '11:00' }, { id: '14:30', label: '14:30' }, { id: 'custom', label: '自訂' }, ].map((opt) => (
-              <button key={opt.id} onClick={() => setTimeOption(opt.id as any)} className={`py-2 rounded-xl text-xs font-bold transition-all border ${timeOption === opt.id ? 'bg-orange-100 border-orange-500 text-orange-700 shadow-sm' : 'bg-white border-gray-200 hover:bg-gray-50 text-gray-600'}`}>{opt.label}</button>
-            ))}
-          </div>
-          {timeOption === 'custom' && (
-            <div className="flex gap-2 p-2 bg-gray-50 rounded-xl border border-orange-100 animate-in slide-in-from-top-2">
-              <select value={customTime.period} onChange={e => setCustomTime({...customTime, period: e.target.value})} className="flex-1 bg-white rounded-lg p-1.5 text-sm font-bold text-center outline-none border border-gray-200 focus:border-orange-300"><option value="AM">上午</option><option value="PM">下午</option></select>
-              <select value={customTime.hour} onChange={e => setCustomTime({...customTime, hour: e.target.value})} className="flex-1 bg-white rounded-lg p-1.5 text-sm font-bold text-center outline-none border border-gray-200 focus:border-orange-300">{Array.from({length: 12}, (_, i) => i + 1).map(h => <option key={h} value={h}>{h}</option>)}</select>
-              <span className="self-center font-bold text-gray-400">:</span>
-              <select value={customTime.minute} onChange={e => setCustomTime({...customTime, minute: e.target.value})} className="flex-1 bg-white rounded-lg p-1.5 text-sm font-bold text-center outline-none border border-gray-200 focus:border-orange-300">{['00', '05', '10', '15', '20', '25', '30', '35', '40', '45', '50', '55'].map(m => <option key={m} value={m}>{m}</option>)}</select>
+            {timeOption === 'custom' && (
+                <div className="flex gap-2 p-2 bg-gray-50 rounded-xl border border-orange-100 animate-in slide-in-from-top-2">
+                <select value={customTime.period} onChange={e => setCustomTime({...customTime, period: e.target.value})} className="flex-1 bg-white rounded-lg p-1.5 text-sm font-bold text-center outline-none border border-gray-200 focus:border-orange-300"><option value="AM">上午</option><option value="PM">下午</option></select>
+                <select value={customTime.hour} onChange={e => setCustomTime({...customTime, hour: e.target.value})} className="flex-1 bg-white rounded-lg p-1.5 text-sm font-bold text-center outline-none border border-gray-200 focus:border-orange-300">{Array.from({length: 12}, (_, i) => i + 1).map(h => <option key={h} value={h}>{h}</option>)}</select>
+                <span className="self-center font-bold text-gray-400">:</span>
+                <select value={customTime.minute} onChange={e => setCustomTime({...customTime, minute: e.target.value})} className="flex-1 bg-white rounded-lg p-1.5 text-sm font-bold text-center outline-none border border-gray-200 focus:border-orange-300">{['00', '05', '10', '15', '20', '25', '30', '35', '40', '45', '50', '55'].map(m => <option key={m} value={m}>{m}</option>)}</select>
+                </div>
+            )}
             </div>
-          )}
-        </div>
 
-        <div className="flex justify-center min-h-[65px] scale-95 origin-center">
-          <Turnstile siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY || "你的_KEY"} onSuccess={(token) => setTurnstileToken(token)} options={{ theme: 'light', size: 'flexible' }} />
-        </div>
+            <div className="flex justify-center min-h-[65px] scale-95 origin-center">
+            <Turnstile siteKey={import.meta.env.VITE_TURNSTILE_SITE_KEY || "你的_KEY"} onSuccess={(token) => setTurnstileToken(token)} options={{ theme: 'light', size: 'flexible' }} />
+            </div>
 
-        {error && <div className="text-red-600 bg-red-50 p-3 rounded-xl text-xs font-bold border border-red-100 text-center animate-pulse">{error}</div>}
+            {error && <div className="text-red-600 bg-red-50 p-3 rounded-xl text-xs font-bold border border-red-100 text-center animate-pulse">{error}</div>}
 
-        <div className="space-y-2 pt-1">
-          <button onClick={handleUpload} disabled={!file || !turnstileToken || isLoading} className="w-full py-3.5 rounded-2xl font-bold text-lg bg-gradient-to-r from-orange-500 to-red-500 text-white shadow-lg shadow-orange-200 hover:scale-[1.01] hover:shadow-xl active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none">
-            {isLoading ? <><Loader2 className="inline animate-spin mr-2"/> 分析中...</> : '開始分析'}
-          </button>
-          <button onClick={() => navigate('/')} className="w-full py-2.5 text-gray-400 font-bold text-sm hover:text-gray-600">取消返回</button>
+            <div className="space-y-2 pt-1">
+            <button onClick={handleUpload} disabled={!file || !turnstileToken || isLoading} className="w-full py-3.5 rounded-2xl font-bold text-lg bg-gradient-to-r from-orange-500 to-red-500 text-white shadow-lg shadow-orange-200 hover:scale-[1.01] hover:shadow-xl active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none">
+                {isLoading ? '分析中，請稍候...' : '開始分析'}
+            </button>
+            <button onClick={() => !isLoading && navigate('/')} disabled={isLoading} className="w-full py-2.5 text-gray-400 font-bold text-sm hover:text-gray-600 disabled:opacity-50">取消返回</button>
+            </div>
         </div>
       </div>
     </div>
