@@ -562,7 +562,7 @@ export default function OrderRoom() {
                  
                  <p className="text-xs text-orange-600/80 font-bold uppercase tracking-widest mb-1 relative z-10">Room Code</p>
                  <div className="text-4xl font-black text-gray-800 font-mono tracking-[0.2em] ml-[0.2em] relative z-10 drop-shadow-sm">
-                    {roomInfo?.joinCode}
+                    {roomInfo?.join_code}
                  </div>
               </div>
               

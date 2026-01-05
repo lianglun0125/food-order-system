@@ -306,7 +306,7 @@ app.post('/api/groups', async (c) => {
     `).bind(groupId, joinCode, JSON.stringify(menuJson), Date.now(), deadline, paymentQrBase64, hostToken).run();
 
     // ★ 修改：回傳 hostToken 給前端 (這是唯一一次前端能拿到的機會)
-    return c.json({ success: true, joinCode, groupId, menu: menuJson, hostToken });
+    return c.json({ success: true, join_code: joinCode, groupId, menu: menuJson, hostToken });
   } catch (e) {
     return c.json({ error: '系統錯誤', details: String(e) }, 500);
   }
@@ -366,7 +366,7 @@ app.get('/api/groups/:code', async (c) => {
   
   return c.json({ 
     id: group.id, 
-    joinCode: group.join_code, 
+    join_code: group.join_code, 
     menu: JSON.parse(group.menu_json as string), 
     status: group.status,
     extra_fee: group.extra_fee,

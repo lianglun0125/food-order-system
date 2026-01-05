@@ -26,7 +26,7 @@ export type Order = {
 // 房間資訊的回傳結構
 export type RoomInfo = {
   id: string;
-  joinCode: string;
+  join_code: string;
   status: 'OPEN' | 'LOCKED' | 'DELETED';
   deadline: number | null;
   extra_fee: number;

@@ -101,9 +101,8 @@ export function useRoomData(roomId: string | undefined, userName: string, userTo
     if (userName && roomId && roomInfo?.status !== 'LOCKED') {
       try {
         const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
-        // 這裡需要注意：原本你的 id 是 joinCode 還是 UUID？假設 param 是 joinCode，需轉換成 UUID
         if (roomInfo?.id) {
-             await fetch(`${apiUrl}/api/groups/${roomInfo.joinCode}/join`, { 
+             await fetch(`${apiUrl}/api/groups/${roomInfo.join_code}/join`, { 
                 method: 'POST', 
                 headers: { 'Content-Type': 'application/json' }, 
                 body: JSON.stringify({ userName, userToken }) 

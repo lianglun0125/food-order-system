@@ -188,7 +188,7 @@ export default function HostDashboard() {
 
     isUpdatingRef.current = true;
     setOrders(prev => prev.map(o => o.id === orderId ? { ...o, is_paid: newStatus } : o));
-    const hostToken = localStorage.getItem(`hostToken-${roomInfo?.joinCode}`);
+    const hostToken = localStorage.getItem(`hostToken-${roomInfo?.join_code}`);
 
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
@@ -225,7 +225,7 @@ export default function HostDashboard() {
     if (!confirm(`確定要刪除這個品項嗎？\n${itemName}`)) return;
     
     // 取得 Host Token
-    const hostToken = localStorage.getItem(`hostToken-${roomInfo?.joinCode || ''}`);
+    const hostToken = localStorage.getItem(`hostToken-${roomInfo?.join_code || ''}`);
 
     try {
       const apiUrl = (import.meta.env.VITE_API_URL || 'http://localhost:8787').replace(/\/$/, '');
@@ -395,7 +395,7 @@ export default function HostDashboard() {
       // 匯出檔案
       // ==========================================
       XLSX.utils.book_append_sheet(wb, ws, "訂單統計");
-      XLSX.writeFile(wb, `點餐統計_${roomInfo?.joinCode}_${new Date().toLocaleDateString()}.xlsx`);
+      XLSX.writeFile(wb, `點餐統計_${roomInfo?.join_code}_${new Date().toLocaleDateString()}.xlsx`);
   };
 
   
